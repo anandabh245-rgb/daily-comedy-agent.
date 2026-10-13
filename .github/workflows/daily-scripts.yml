@@ -6,31 +6,33 @@ on:
     - cron: "30 12 * * *"
 
 permissions:
-contents: write
+  contents: write
 
 jobs:
-generate:
-runs-on: ubuntu-latest
+  generate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
-steps:
-  - name: Get repository files
-    uses: actions/checkout@v4
+    steps:
+      - name: Get repository files
+        uses: actions/checkout@v4
 
-  - name: Set up Python
-    uses: actions/setup-python@v5
-    with:
-      python-version: "3.12"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-  - name: Generate comedy scripts
-    env:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GEMINI_MODEL: gemini-2.5-flash
-    run: python generate_scripts.py
+      - name: Generate comedy scripts
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-2.5-flash
+        run: python generate_scripts.py
 
-  - name: Save generated scripts
-    run: |
-      git config user.name "Comedy Script Bot"
-      git config user.email "actions@github.com"
-      git add output/
-      git diff --cached --quiet || git commit -m "Add daily comedy scripts"
-      git push
+      - name: Save generated scripts
+        run: |
+          git config user.name "Comedy Script Bot"
+          git config user.email "actions@github.com"
+          git add output/
+          git diff --cached --quiet || git commit -m "Add daily comedy scripts"
+          git push
