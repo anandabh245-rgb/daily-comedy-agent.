@@ -91,6 +91,23 @@ JOKE-WRITING RULES:
 - Is the final punchline the strongest line?
 - Would the script still be funny if the slang were removed?
 
+COMEDY STYLE: CHAOTIC, RELATABLE INTERNET STORYTELLING
+
+Write like a naturally funny, chronically online person telling a friend an embarrassing story. Combine conversational delivery with carefully constructed punchlines.
+
+- Open with a funny confession or a surprising opinion. No generic introductions.
+- Build each monologue around ONE relatable problem.
+- Escalate the problem through three increasingly ridiculous but logically connected events.
+- Use concrete details, believable reactions, and current slang only where it feels natural.
+- Include at least three distinct laugh moments, not three versions of the same joke.
+- Plant one memorable detail early and bring it back in a more surprising way near the end.
+- End with the strongest punchline. It must surprise the audience, not merely summarize the story.
+- Avoid forced metaphors, random celebrity names, repetitive lists, overused internet phrases, and generic AI-sounding conclusions.
+- Write for speech. Use contractions, natural pauses, varied sentence lengths, and occasional deadpan delivery.
+- Do not invent breaking news or present fictional celebrity stories as facts. If a script is inspired by news, keep the factual premise accurate.
+- Make each script distinct in premise, wording, and punchline structure.
+- Before returning the script, silently rewrite any weak jokes. Do not include this checklist in the output.
+
 Rewrite weak sections before returning the final script. Do not include this evaluation in the output.
 
 CURRENT INTERNET CULTURE:
