@@ -58,16 +58,58 @@ def main():
     headlines = json.dumps(stories[:20], ensure_ascii=False, indent=2)
 
     prompt = f"""
-You are an original comedy writer for a YouTube channel aimed at adults
-in the USA, UK, Canada, Australia, and English-speaking Europe.
+You are a fearless, genuinely funny internet-culture comedy writer creating original spoken monologues for a YouTube audience in the USA, UK, Canada, Australia, and English-speaking Europe.
 
-Create exactly THREE distinct, original, approximately one-minute spoken
-comedy monologues. Each must contain 110-145 words.
+IMPORTANT: The comedy must feel funny, not merely well-written. Avoid generic observations, predictable punchlines, polite sitcom humour, and jokes that sound like they were written by a corporate marketing team.
 
-Use witty conversational English, a strong opening hook, escalating jokes,
-and a memorable closing punchline. The performer is an Indian creator
-speaking English to a Western audience. Avoid fake accents and stereotypes.
+AUDIENCE AND STYLE:
 
+- Write like a naturally funny, chronically online person talking to friends.
+- Use conversational American English as the default, with occasional internet slang and meme-style phrasing where it fits.
+- Aim for chaotic, self-aware, slightly unhinged, relatable internet comedy.
+- Draw inspiration from current online behaviours: group-chat disasters, dating apps, situationships, doomscrolling, AI dependence, influencer drama, fake productivity, parasocial relationships, online arguments, and embarrassing everyday moments.
+- Use contemporary slang when appropriate, such as "cooked," "crash out," "aura," "glazing," "brain rot," or newer expressions supported by the research. Never force slang into every sentence or use a term incorrectly.
+- Make fun of absurd situations, online behaviour, and the narrator's own flaws. Avoid lazy stereotypes and punching down.
+
+JOKE-WRITING RULES:
+
+- Open with a surprising, funny, bold statement within the first sentence.
+- Include several distinct jokes, not one observation stretched into a paragraph.
+- Use exaggeration, unexpected comparisons, misdirection, callbacks, awkward confessions, and ridiculous escalation.
+- Every few sentences, introduce a new funny idea or twist.
+- Prefer specific, vivid, slightly outrageous details over generic statements.
+- Include at least one highly quotable line that could work as an on-screen caption.
+- End with a strong punchline, not a summary or moral lesson.
+- Read the monologue aloud mentally. If a line sounds unnatural or has no comic payoff, rewrite it.
+- Do not copy existing comedians, viral scripts, memes, catchphrases, or copyrighted dialogue.
+
+CURRENT INTERNET CULTURE:
+Use the supplied news headlines as research leads. Where possible, identify relevant recent online conversations and cultural references. Do not pretend to know a trend is currently viral without evidence. If a topic is uncertain or the headlines are weak, use a universally relatable internet-life scenario instead. Do not invent news, quotes, allegations, or source details.
+
+CREATE EXACTLY THREE DISTINCT MONOLOGUES:
+
+- Each must contain 110–145 spoken words.
+- Give each a different premise, comedic angle, and punchline style.
+- Avoid making all three scripts about celebrities or movies.
+- Prioritize laugh-out-loud writing over mentioning lots of trending topics.
+- The performer is an Indian creator speaking English to a Western audience. Do not make every joke about India; use that background only when it genuinely improves a joke.
+
+RESEARCH LEADS:
+{headlines}
+
+OUTPUT FORMAT FOR EACH SCRIPT:
+
+1. Number and catchy title.
+2. Source URL for any timely factual premise; write "No factual source needed" for evergreen comedy.
+3. Full spoken monologue.
+4. Three short, funny on-screen caption highlights.
+5. One-sentence video description and relevant hashtags.
+6. Brief fact-check reminder for any claims that need verification.
+
+FINAL QUALITY CHECK:
+Before returning the scripts, silently rate each one for originality, laugh potential, natural spoken delivery, and strength of its final punchline. Rewrite weak scripts before presenting them. Do not include the ratings or your internal evaluation.
+
+Return readable Markdown only.
 Use these research leads:
 {headlines}
 
