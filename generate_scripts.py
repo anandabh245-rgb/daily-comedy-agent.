@@ -73,18 +73,25 @@ AUDIENCE AND STYLE:
 
 JOKE-WRITING RULES:
 
-- Open with a surprising, funny, bold statement within the first sentence.
-- Include several distinct jokes, not one observation stretched into a paragraph.
-- Use exaggeration, unexpected comparisons, misdirection, callbacks, awkward confessions, and ridiculous escalation.
-- Every few sentences, introduce a new funny idea or twist.
-- Prefer specific, vivid, slightly outrageous details over generic statements.
-- Include at least one highly quotable line that could work as an on-screen caption.
-- End with a strong punchline, not a summary or moral lesson.
-- Read the monologue aloud mentally. If a line sounds unnatural or has no comic payoff, rewrite it.
-- Do not copy existing comedians, viral scripts, memes, catchphrases, or copyrighted dialogue.
-- Escalation: Every monologue must get progressively more ridiculous, with the final joke being stronger than the opening joke.
-- Anti-generic rule: Reject any sentence that could appear in thousands of generic AI comedy scripts. Replace it with a specific, unexpected observation.
-- Punchline test: Don't finish with a summary such as “I'm just dramatic” or “we're all cooked.” End with a reversal, an embarrassing confession, or an unexpected consequence.
+1. OPEN WITH A LAUGH: The first sentence must contain a funny confession, bold opinion, unexpected comparison, or absurd situation. Do not waste the opening on generic introductions.
+2. BUILD ONE COMEDIC STORY: Choose one central idea and develop it. Do not throw unrelated random jokes together just to sound chaotic.
+3. ESCALATE NATURALLY: Each new joke should make the situation more ridiculous than the previous one. Start with a relatable problem and gradually push it into absurd territory.
+4. USE SPECIFIC DETAILS: Replace vague phrases like "I'm completely cooked" with concrete, embarrassing situations that viewers can picture.
+5. USE MODERN SLANG SELECTIVELY: Use contemporary American internet slang only when it sounds natural. Never use slang as a substitute for an actual punchline. Avoid outdated, forced, or incorrectly used expressions.
+6. INCLUDE A CALLBACK: Introduce one memorable detail early in the monologue, then bring it back near the end in a different, funnier context.
+7. CREATE A STRONG FINAL PUNCHLINE: The last line must deliver a surprise, reversal, embarrassing confession, or unexpected consequence. Never finish with a generic summary such as "I'm just dramatic" or "we're all cooked."
+8. SOUND LIKE A REAL PERSON: Write conversationally, as if a naturally funny, chronically online person is telling a friend a ridiculous story. Use varied sentence lengths, natural pauses, and occasional deadpan delivery.
+9. AVOID AI COMEDY CLICHÉS: Do not rely on endless metaphors, repetitive three-item lists, random celebrity references, or excessive slang. Every joke must serve the central story.
+10. RUN A SILENT QUALITY CHECK: Before returning each script, check:
+
+- Is the opening genuinely funny?
+- Are there at least three distinct comic payoffs?
+- Does the situation escalate logically?
+- Does the callback create a fresh joke?
+- Is the final punchline the strongest line?
+- Would the script still be funny if the slang were removed?
+
+Rewrite weak sections before returning the final script. Do not include this evaluation in the output.
 
 CURRENT INTERNET CULTURE:
 Use the supplied news headlines as research leads. Where possible, identify relevant recent online conversations and cultural references. Do not pretend to know a trend is currently viral without evidence. If a topic is uncertain or the headlines are weak, use a universally relatable internet-life scenario instead. Do not invent news, quotes, allegations, or source details.
