@@ -87,7 +87,7 @@ Return readable Markdown only.
         "generationConfig": {"temperature": 0.9}
     }
 
-    endpoint = (
+        endpoint = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         + MODEL + ":generateContent?key=" + urllib.parse.quote(API_KEY)
     )
@@ -98,7 +98,7 @@ Return readable Markdown only.
         method="POST",
     )
 
-        try:
+    try:
         with urllib.request.urlopen(request, timeout=120) as response:
             result = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
@@ -112,6 +112,3 @@ Return readable Markdown only.
     filename = output / f"{today}.md"
     filename.write_text(text, encoding="utf-8")
     print(f"Saved scripts to {filename}")
-
-if __name__ == "__main__":
-    main()
