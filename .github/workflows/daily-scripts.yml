@@ -1,9 +1,9 @@
 name: Daily Comedy Script Agent
 
 on:
-workflow_dispatch:
-schedule:
-- cron: "30 12 * * *"
+  workflow_dispatch:
+  schedule:
+    - cron: "30 12 * * *"
 
 permissions:
 contents: write
