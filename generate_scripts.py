@@ -98,8 +98,12 @@ Return readable Markdown only.
         method="POST",
     )
 
+    try:
     with urllib.request.urlopen(request, timeout=120) as response:
         result = json.loads(response.read().decode("utf-8"))
+except urllib.error.HTTPError as error:
+    print("Gemini API error:", error.read().decode("utf-8"))
+    raise
 
     text = result["candidates"][0]["content"]["parts"][0]["text"]
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
