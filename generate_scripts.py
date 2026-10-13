@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 API_KEY = os.environ["GEMINI_API_KEY"]
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
 QUERIES = [
     "US UK celebrity entertainment when:2d",
@@ -116,7 +116,7 @@ Clearly mark anything that needs verification. Return readable Markdown only.
             with urllib.request.urlopen(request, timeout=120) as response:
                 result = json.loads(response.read().decode("utf-8"))
             break
-        except urllib.error.HTTPError as error:
+        except (urllib.error.HTTPError, TimeoutError, OSError) as error:
             message = error.read().decode("utf-8")
             print("Gemini API error:", message)
 
