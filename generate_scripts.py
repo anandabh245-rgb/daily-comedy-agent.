@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 API_KEY = os.environ["GEMINI_API_KEY"]
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 QUERIES = [
     "US UK celebrity entertainment when:2d",
@@ -90,8 +90,7 @@ Clearly mark anything that needs verification. Return readable Markdown only.
 
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.9},
-    }
+        
 
     endpoint = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
