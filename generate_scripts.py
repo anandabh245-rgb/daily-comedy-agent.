@@ -88,8 +88,10 @@ For each script provide:
 Clearly mark anything that needs verification. Return readable Markdown only.
 """
 
+    
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
+    }
         
 
     endpoint = (
