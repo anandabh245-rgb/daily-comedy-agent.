@@ -108,12 +108,25 @@ Clearly mark anything that needs verification. Return readable Markdown only.
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        print("Gemini API error:", error.read().decode("utf-8"))
-        raise
+    
+    import time
+
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as error:
+            message = error.read().decode("utf-8")
+            print("Gemini API error:", message)
+
+            if error.code not in (429, 500, 502, 503, 504) or attempt == 3:
+                raise
+
+            wait = 15 * (attempt + 1)
+            print(f"Temporary API error. Retrying in {wait} seconds...")
+            time.sleep(wait)
+            
 
     generated_text = result["candidates"][0]["content"]["parts"][0]["text"]
 
