@@ -82,6 +82,9 @@ JOKE-WRITING RULES:
 - End with a strong punchline, not a summary or moral lesson.
 - Read the monologue aloud mentally. If a line sounds unnatural or has no comic payoff, rewrite it.
 - Do not copy existing comedians, viral scripts, memes, catchphrases, or copyrighted dialogue.
+- Escalation: Every monologue must get progressively more ridiculous, with the final joke being stronger than the opening joke.
+- Anti-generic rule: Reject any sentence that could appear in thousands of generic AI comedy scripts. Replace it with a specific, unexpected observation.
+- Punchline test: Don't finish with a summary such as “I'm just dramatic” or “we're all cooked.” End with a reversal, an embarrassing confession, or an unexpected consequence.
 
 CURRENT INTERNET CULTURE:
 Use the supplied news headlines as research leads. Where possible, identify relevant recent online conversations and cultural references. Do not pretend to know a trend is currently viral without evidence. If a topic is uncertain or the headlines are weak, use a universally relatable internet-life scenario instead. Do not invent news, quotes, allegations, or source details.
