@@ -1,4 +1,3 @@
-
 import os
 import json
 import time
@@ -28,13 +27,11 @@ USER_AGENT = (
 )
 
 
-class ArticleTextParser(HTMLParser):
-    """Extract readable article text and useful page metadata."""
-
+class ArticleParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.parts = []
         self.title_parts = []
+        self.text_parts = []
         self.description = ""
         self.in_title = False
         self.skip_depth = 0
@@ -53,9 +50,14 @@ class ArticleTextParser(HTMLParser):
                 attrs.get("property", "")
                 or attrs.get("name", "")
             ).lower()
-            if key in ("og:description", "description", "twitter:description"):
+
+            if key in (
+                "og:description",
+                "description",
+                "twitter:description",
+            ):
                 value = attrs.get("content", "").strip()
-                if value and len(value) > len(self.description):
+                if len(value) > len(self.description):
                     self.description = value
 
     def handle_endtag(self, tag):
@@ -67,6 +69,7 @@ class ArticleTextParser(HTMLParser):
 
     def handle_data(self, data):
         value = " ".join(data.split())
+
         if not value:
             return
 
@@ -74,10 +77,11 @@ class ArticleTextParser(HTMLParser):
             self.title_parts.append(value)
 
         if self.skip_depth == 0 and len(value) > 25:
-            self.parts.append(value)
+            self.text_parts.append(value)
 
 
-def fetch_url(url, timeout=20):
+def fetch_article_metadata(url):
+    """Try to read an article, but never discard a headline if blocked."""
     request = urllib.request.Request(
         url,
         headers={
@@ -86,21 +90,33 @@ def fetch_url(url, timeout=20):
         },
     )
 
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        final_url = response.geturl()
-        content_type = response.headers.get("Content-Type", "")
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            final_url = response.geturl()
+            content_type = response.headers.get("Content-Type", "")
 
-        if "html" not in content_type.lower():
-            raise RuntimeError("The page did not return HTML.")
+            if "html" not in content_type.lower():
+                return final_url, "", "", ""
 
-        raw = response.read(2_000_000)
-        charset = response.headers.get_content_charset() or "utf-8"
-        page = raw.decode(charset, errors="replace")
+            raw = response.read(1_000_000)
+            charset = response.headers.get_content_charset() or "utf-8"
+            page = raw.decode(charset, errors="replace")
 
-    return final_url, page
+        parser = ArticleParser()
+        parser.feed(page)
+
+        title = html.unescape(" ".join(parser.title_parts)).strip()
+        description = html.unescape(parser.description).strip()
+        body = html.unescape(" ".join(parser.text_parts))[:5000]
+
+        return final_url, title, description, body
+
+    except Exception as error:
+        print(f"Article unavailable; keeping headline: {error}")
+        return url, "", "", ""
 
 
-def collect_rss_stories():
+def collect_stories():
     stories = {}
 
     for query in QUERIES:
@@ -112,8 +128,10 @@ def collect_rss_stories():
 
         try:
             request = urllib.request.Request(
-                rss_url, headers={"User-Agent": USER_AGENT}
+                rss_url,
+                headers={"User-Agent": USER_AGENT},
             )
+
             with urllib.request.urlopen(request, timeout=25) as response:
                 root = ET.fromstring(response.read())
 
@@ -130,144 +148,113 @@ def collect_rss_stories():
                     })
 
         except Exception as error:
-            print(f"RSS warning: {error}")
+            print(f"RSS warning for '{query}': {error}")
 
     result = list(stories.values())
     print(f"Collected {len(result)} unique headlines.")
     return result
 
 
-def verify_article(story):
-    """
-    Attempt to follow the news link and read the publisher page.
-    A successful fetch is not proof that every claim is true.
-    """
+def prepare_stories():
+    headlines = collect_stories()
+    prepared = []
 
-    try:
-        final_url, page = fetch_url(story["rss_url"])
-        parser = ArticleTextParser()
-        parser.feed(page)
+    # Article reading is optional. A blocked website no longer
+    # prevents the whole workflow from producing scripts.
+    for story in headlines[:30]:
+        final_url, page_title, description, article_text = (
+            fetch_article_metadata(story["rss_url"])
+        )
 
-        title = html.unescape(" ".join(parser.title_parts)).strip()
-        description = html.unescape(parser.description).strip()
-        body = " ".join(parser.parts)
-        body = html.unescape(body)
-
-        # Reject pages that provide almost no readable information.
-        if len(body) < 250 and len(description) < 100:
-            raise RuntimeError(
-                "Too little readable article text; possibly blocked or paywalled."
-            )
-
-        story["source_url"] = final_url
-        story["page_title"] = title
+        story["source_url"] = final_url or story["rss_url"]
+        story["page_title"] = page_title
         story["description"] = description
-        story["article_text"] = body[:7000]
-        story["article_accessible"] = True
+        story["article_text"] = article_text
+        story["article_accessible"] = (
+            len(article_text) >= 250 or len(description) >= 80
+        )
 
-        print(f"Article page accessible: {story['title']}")
-        return story
+        if story["article_accessible"]:
+            print(f"Article text available: {story['title']}")
+        else:
+            print(f"Headline only; manual review needed: {story['title']}")
 
-    except Exception as error:
-        print(f"Could not verify article '{story['title']}': {error}")
-        return None
+        prepared.append(story)
 
-
-def get_verified_stories():
-    headlines = collect_rss_stories()
-    verified = []
-
-    # Try recent stories until we have enough accessible publisher pages.
-    for story in headlines[:35]:
-        result = verify_article(story)
-        if result:
-            verified.append(result)
-
-        if len(verified) >= 8:
+        if len(prepared) >= 15:
             break
 
-        time.sleep(1)
+        time.sleep(0.25)
 
-    print(f"Publisher pages accessible: {len(verified)}")
-    return verified
+    print(f"Stories available for drafting: {len(prepared)}")
+    return prepared
 
 
 def build_prompt(stories):
-    supplied_stories = []
+    supplied = []
 
     for story in stories:
-        supplied_stories.append({
+        supplied.append({
             "headline": story["title"],
-            "publisher_page_title": story["page_title"],
-            "publisher_url": story["source_url"],
+            "source_url": story["source_url"],
             "published": story["published"],
+            "article_page_title": story["page_title"],
             "page_description": story["description"],
-            "article_excerpt": story["article_text"][:5000],
+            "article_excerpt_if_accessible": story["article_text"][:3500],
+            "article_text_accessible": story["article_accessible"],
         })
 
     return f"""
-You are an excellent stand-up comedy writer creating original,
-spoken-word entertainment videos for audiences in the USA, UK,
-Canada and Australia. The narrator may occasionally use a natural
-Indian perspective when it genuinely improves a joke.
+You are a sharp stand-up comedy writer creating original spoken
+comedy for audiences in the USA, UK, Canada and Australia.
 
-Write exactly THREE original comedy scripts using THREE DIFFERENT
-stories from the supplied article data.
+Write exactly THREE scripts using THREE DIFFERENT supplied stories.
 
 COMEDY STYLE
-- The first sentence must hook the viewer immediately.
-- Sound like a real comedian telling a funny story, not an AI essay.
-- Use specific observations, escalation, surprise and callbacks.
-- Aim for frequent punchlines without making every line feel forced.
-- End each script with its strongest joke or a clever twist.
-- Avoid filler, generic motivational language and repeated metaphors.
-- Do not force Indian references into every script.
-- Aim for about 100-140 spoken words per script.
-- Make the joke about the situation, public behavior or absurdity,
-  not about humiliating vulnerable people.
+- Hook the viewer in the first sentence.
+- Sound conversational, specific and naturally funny.
+- Build one clear premise and escalate it.
+- Use frequent punchlines without forcing every line.
+- End each monologue with a memorable twist or callback.
+- Avoid generic AI language, filler and repetitive metaphors.
+- Use an Indian perspective only when it naturally improves the joke.
+- Aim for 100-140 spoken words per monologue.
+- Focus jokes on absurd situations, not humiliating vulnerable people.
 
 FACTUAL RULES
-- Use ONLY the stories provided below.
-- Read the article excerpts and descriptions before writing.
-- Do not invent quotes, events, motives, allegations, relationships,
-  legal outcomes, medical details or personal history.
-- Do not treat an allegation as proven fact.
-- If an article excerpt does not support a detail, do not state it.
-- Clearly distinguish reported claims from established facts.
-- Exaggeration is allowed only when it is obviously a joke.
-- Never invent, rewrite or shorten the supplied publisher URL.
-- Do not claim independent fact-checking or certainty.
-- If the available article text is ambiguous, keep the script general.
-- Do not include any other URLs in the output.
+- Use only the supplied story records.
+- If article_text_accessible is true, use details supported by the
+  supplied article text, page title or description.
+- If article_text_accessible is false, only the headline is available.
+  Keep the script strictly to what the headline says.
+- Do not invent quotes, events, motives, allegations or extra context.
+- Never turn an allegation into a proven fact.
+- Do not claim independent fact-checking.
+- Never invent or change a source URL.
+- Use the exact source_url supplied for each story.
+- Include no other URLs.
+- If a story cannot support a safe joke, choose another story.
 
 OUTPUT FORMAT
-Return exactly THREE scripts in Markdown, numbered 1 to 3.
-Use these SIX sections for every script:
+Return exactly THREE scripts in Markdown.
 
-1. Headline: copy the supplied headline exactly.
-2. Source URL: copy the supplied publisher URL exactly.
-3. Spoken Monologue: 100-140 spoken words.
-4. Caption: one short, catchy line.
-5. Video Description: a concise, natural description.
-6. Fact-check Note: state that the script is based on the accessible
-   article page and that important claims should be checked before
-   publication.
-
-Use this exact section layout:
+For EACH story, include all six sections:
 
 ## Story 1
-**Headline:** ...
-**Source URL:** ...
-**Spoken Monologue:**
-...
-**Caption:** ...
-**Video Description:** ...
-**Fact-check Note:** ...
+**Headline:** exact supplied headline
+**Source URL:** exact supplied source_url
+**Spoken Monologue:** 100-140 words
+**Caption:** one short, catchy line
+**Video Description:** concise natural description
+**Fact-check Note:** If article text was accessible, say that the
+page was accessible but claims still need review. If not, explicitly
+say only the headline was available and the linked article must be
+checked before publication.
 
-Repeat for Story 2 and Story 3.
+Repeat using ## Story 2 and ## Story 3.
 
-ARTICLE DATA:
-{json.dumps(supplied_stories, ensure_ascii=False, indent=2)}
+SUPPLIED STORIES:
+{json.dumps(supplied, ensure_ascii=False, indent=2)}
 """
 
 
@@ -302,6 +289,7 @@ def call_gemini(prompt):
                 result = json.loads(response.read().decode("utf-8"))
 
             candidates = result.get("candidates", [])
+
             if not candidates:
                 raise RuntimeError(
                     "Gemini returned no candidates. Check model availability and quota."
@@ -330,6 +318,7 @@ def call_gemini(prompt):
 
         except (TimeoutError, OSError) as error:
             print(f"Network error: {error}")
+
             if attempt == 3:
                 raise
 
@@ -341,35 +330,38 @@ def call_gemini(prompt):
 
 
 def validate_output(text, stories):
-    """Check source links and the six-section format before saving."""
+    """Reject invented URLs and incomplete script formatting."""
 
-    allowed_urls = {
-        story["source_url"].rstrip("/")
-        for story in stories
-        if story.get("source_url")
-    }
+    allowed_urls = set()
+
+    for story in stories:
+        for key in ("source_url", "rss_url"):
+            url = story.get(key, "").strip()
+
+            if url:
+                allowed_urls.add(url.rstrip("/"))
 
     found_urls = re.findall(r'https?://[^\s<>\]\)"]+', text)
-    found_urls = [url.rstrip(".,;:!?").rstrip("/") for url in found_urls]
+    found_urls = [
+        url.rstrip(".,;:!?").rstrip("/")
+        for url in found_urls
+    ]
 
     invalid_urls = sorted({
-        url for url in found_urls if url not in allowed_urls
+        url for url in found_urls
+        if url.rstrip("/") not in allowed_urls
     })
 
     if invalid_urls:
-        print("Output contains unapproved URLs:")
-        for url in invalid_urls:
-            print(f" - {url}")
         raise RuntimeError(
-            "Output rejected: it contains a URL not found in the verified "
-            "article list. No new script file was saved."
+            "Output rejected because it contains URLs not present "
+            "in the collected RSS data: " + ", ".join(invalid_urls)
         )
 
-    unique_urls = set(found_urls)
-    if len(unique_urls) != 3:
+    if len(set(found_urls)) != 3:
         raise RuntimeError(
-            f"Output must cite exactly three distinct source URLs; found "
-            f"{len(unique_urls)}. No new script file was saved."
+            "Output must contain exactly three distinct source URLs; "
+            f"found {len(set(found_urls))}."
         )
 
     required_sections = [
@@ -384,14 +376,14 @@ def validate_output(text, stories):
     for section in required_sections:
         if text.count(section) < 3:
             raise RuntimeError(
-                f"Output rejected: missing or incomplete section '{section}'. "
-                "No new script file was saved."
+                f"Output rejected: missing section '{section}'."
             )
 
-    if len(re.findall(r"(?m)^## Story [1-3]\s*$", text)) != 3:
+    headings = re.findall(r"(?m)^## Story [1-3]\s*$", text)
+
+    if len(headings) != 3:
         raise RuntimeError(
-            "Output rejected: expected exactly three numbered stories. "
-            "No new script file was saved."
+            "Output rejected: expected exactly three story headings."
         )
 
     print("Output structure and source URL checks passed.")
@@ -403,29 +395,31 @@ def main():
             "GEMINI_API_KEY is missing. Check your GitHub Actions secret."
         )
 
-    stories = get_verified_stories()
+    stories = prepare_stories()
 
     if len(stories) < 3:
         raise RuntimeError(
-            "Fewer than three publisher pages could be read. "
-            "No scripts were saved. Try running the workflow again later."
+            "Fewer than three headlines were collected. "
+            "Try running the workflow again."
         )
 
-    prompt = build_prompt(stories)
-    generated = call_gemini(prompt)
+    generated = call_gemini(build_prompt(stories))
     validate_output(generated, stories)
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     output_dir = Path("output")
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / f"{today}.md"
 
+    output_file = output_dir / f"{today}.md"
     output_file.write_text(generated + "\n", encoding="utf-8")
 
     print(f"Successfully saved scripts: {output_file}")
-    print("Reminder: accessible article text is not the same as full fact verification.")
+    print(
+        "Reminder: URL checks do not prove every claim is true. "
+        "Review fact-check notes before publishing."
+    )
 
 
 if __name__ == "__main__":
     main()
-        
+            
