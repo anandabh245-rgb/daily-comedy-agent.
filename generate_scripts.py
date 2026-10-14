@@ -65,6 +65,13 @@ def get_headlines():
 
 def build_prompt(stories):
     """Build the writing brief for the channel's comedy persona."""
+   • Every monologue must have a central comic premise, not just a collection of topical jokes.
+   • At least two punchlines must come from the narrator's own behaviour, insecurity, or embarrassing reaction.
+   • Include one unexpected reversal that reinterprets an earlier detail.
+   • Avoid defaulting to predictable Indian-parent, auntie, WhatsApp, and teacher jokes unless the specific situation makes them original.
+   • Don't invent biographical details about the performer.
+   • Prefer one excellent story with a strong ending over six loosely connected jokes.
+   • Treat the final punchline as the most important line in the script.
 
     headlines = json.dumps(
         stories,
