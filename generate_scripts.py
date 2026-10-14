@@ -1,8 +1,10 @@
+
 import os
 import json
 import time
 import re
 import html
+import random
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -14,17 +16,25 @@ from pathlib import Path
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
 
-QUERIES = [
-    "US UK celebrity entertainment when:2d",
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+)
+
+GOOGLE_QUERIES = [
+    "celebrity entertainment news when:2d",
     "viral internet culture influencer news when:2d",
     "movies music streaming pop culture when:2d",
     "hip hop social media celebrity drama when:2d",
 ]
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
-)
+# Used only if Google News is unavailable.
+FALLBACK_FEEDS = [
+    "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
+    "https://variety.com/feed/",
+    "https://www.theguardian.com/culture/rss",
+    "https://www.hollywoodreporter.com/feed/",
+]
 
 
 class ArticleParser(HTMLParser):
@@ -80,27 +90,180 @@ class ArticleParser(HTMLParser):
             self.text_parts.append(value)
 
 
+def download_url(url, timeout=25, attempts=3):
+    """Retry temporary HTTP errors and network failures."""
+    last_error = None
+
+    for attempt in range(attempts):
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "application/rss+xml, application/xml, text/xml, text/html, */*",
+            },
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read(2_000_000), response.geturl(), (
+                    response.headers.get("Content-Type", "")
+                )
+
+        except urllib.error.HTTPError as error:
+            last_error = error
+
+            # Retry only temporary or rate-limit errors.
+            if error.code not in (408, 425, 429, 500, 502, 503, 504):
+                break
+
+            print(
+                f"Temporary HTTP {error.code}; "
+                f"attempt {attempt + 1}/{attempts}"
+            )
+
+        except (TimeoutError, OSError) as error:
+            last_error = error
+            print(f"Network issue; attempt {attempt + 1}/{attempts}: {error}")
+
+        if attempt < attempts - 1:
+            time.sleep((2 ** attempt) * 3 + random.uniform(0, 2))
+
+    raise RuntimeError(f"Could not fetch feed: {last_error}")
+
+
+def parse_feed(xml_bytes, feed_name):
+    """Read standard RSS or Atom feed entries."""
+    root = ET.fromstring(xml_bytes)
+    stories = []
+
+    # RSS format
+    for item in root.findall(".//item"):
+        title = item.findtext("title", "").strip()
+        link = item.findtext("link", "").strip()
+        published = (
+            item.findtext("pubDate", "")
+            or item.findtext("{http://purl.org/dc/elements/1.1/}date", "")
+        ).strip()
+
+        description = item.findtext("description", "").strip()
+
+        if title and link:
+            stories.append({
+                "title": html.unescape(title),
+                "rss_url": link,
+                "published": published,
+                "feed": feed_name,
+                "feed_description": html.unescape(
+                    re.sub(r"<[^>]+>", " ", description)
+                )[:1500],
+            })
+
+    # Atom format, in case a feed uses it
+    if not stories:
+        ns = {"a": "http://www.w3.org/2005/Atom"}
+
+        for entry in root.findall(".//a:entry", ns):
+            title_node = entry.find("a:title", ns)
+            link_node = entry.find("a:link", ns)
+            date_node = entry.find("a:updated", ns)
+
+            title = (
+                "".join(title_node.itertext()).strip()
+                if title_node is not None else ""
+            )
+            link = (
+                link_node.attrib.get("href", "").strip()
+                if link_node is not None else ""
+            )
+            published = (
+                date_node.text.strip()
+                if date_node is not None and date_node.text else ""
+            )
+
+            if title and link:
+                stories.append({
+                    "title": html.unescape(title),
+                    "rss_url": link,
+                    "published": published,
+                    "feed": feed_name,
+                    "feed_description": "",
+                })
+
+    return stories
+
+
+def collect_google_news():
+    collected = []
+
+    for query in GOOGLE_QUERIES:
+        url = (
+            "https://news.google.com/rss/search?q="
+            + urllib.parse.quote(query)
+            + "&hl=en-US&gl=US&ceid=US:en"
+        )
+
+        try:
+            data, _, _ = download_url(url, attempts=3)
+            collected.extend(parse_feed(data, "Google News"))
+            print(f"Google News query succeeded: {query}")
+
+        except Exception as error:
+            print(f"Google News query failed: {query} — {error}")
+
+        # Avoid sending a burst of requests.
+        time.sleep(2)
+
+    return collected
+
+
+def collect_fallback_feeds():
+    collected = []
+
+    for url in FALLBACK_FEEDS:
+        try:
+            data, _, _ = download_url(url, attempts=2)
+            entries = parse_feed(data, url)
+            collected.extend(entries)
+            print(f"Fallback feed returned {len(entries)} stories: {url}")
+
+        except Exception as error:
+            print(f"Fallback feed unavailable: {url} — {error}")
+
+        time.sleep(1)
+
+    return collected
+
+
+def collect_stories():
+    stories = {}
+
+    # Try Google News first.
+    for story in collect_google_news():
+        stories.setdefault(story["title"], story)
+
+    if len(stories) < 3:
+        print("Google News returned too few stories. Trying fallback feeds.")
+
+        for story in collect_fallback_feeds():
+            stories.setdefault(story["title"], story)
+
+    result = list(stories.values())
+    print(f"Collected {len(result)} unique headlines across feeds.")
+    return result
+
+
 def fetch_article_metadata(url):
-    """Try to read an article, but never discard a headline if blocked."""
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml",
-        },
-    )
-
+    """Try to read article text; keep the RSS item if access is blocked."""
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            final_url = response.geturl()
-            content_type = response.headers.get("Content-Type", "")
+        raw, final_url, content_type = download_url(
+            url, timeout=15, attempts=1
+        )
 
-            if "html" not in content_type.lower():
-                return final_url, "", "", ""
+        if "html" not in content_type.lower():
+            return final_url, "", "", ""
 
-            raw = response.read(1_000_000)
-            charset = response.headers.get_content_charset() or "utf-8"
-            page = raw.decode(charset, errors="replace")
+        charset = "utf-8"
+        page = raw.decode(charset, errors="replace")
 
         parser = ArticleParser()
         parser.feed(page)
@@ -112,55 +275,14 @@ def fetch_article_metadata(url):
         return final_url, title, description, body
 
     except Exception as error:
-        print(f"Article unavailable; keeping headline: {error}")
+        print(f"Article unavailable; retaining headline: {error}")
         return url, "", "", ""
-
-
-def collect_stories():
-    stories = {}
-
-    for query in QUERIES:
-        rss_url = (
-            "https://news.google.com/rss/search?q="
-            + urllib.parse.quote(query)
-            + "&hl=en-US&gl=US&ceid=US:en"
-        )
-
-        try:
-            request = urllib.request.Request(
-                rss_url,
-                headers={"User-Agent": USER_AGENT},
-            )
-
-            with urllib.request.urlopen(request, timeout=25) as response:
-                root = ET.fromstring(response.read())
-
-            for item in root.findall(".//item"):
-                title = item.findtext("title", "").strip()
-                link = item.findtext("link", "").strip()
-                published = item.findtext("pubDate", "").strip()
-
-                if title and link:
-                    stories.setdefault(title, {
-                        "title": title,
-                        "rss_url": link,
-                        "published": published,
-                    })
-
-        except Exception as error:
-            print(f"RSS warning for '{query}': {error}")
-
-    result = list(stories.values())
-    print(f"Collected {len(result)} unique headlines.")
-    return result
 
 
 def prepare_stories():
     headlines = collect_stories()
     prepared = []
 
-    # Article reading is optional. A blocked website no longer
-    # prevents the whole workflow from producing scripts.
     for story in headlines[:30]:
         final_url, page_title, description, article_text = (
             fetch_article_metadata(story["rss_url"])
@@ -198,6 +320,8 @@ def build_prompt(stories):
             "headline": story["title"],
             "source_url": story["source_url"],
             "published": story["published"],
+            "feed": story["feed"],
+            "feed_description": story.get("feed_description", ""),
             "article_page_title": story["page_title"],
             "page_description": story["description"],
             "article_excerpt_if_accessible": story["article_text"][:3500],
@@ -213,9 +337,9 @@ Write exactly THREE scripts using THREE DIFFERENT supplied stories.
 COMEDY STYLE
 - Hook the viewer in the first sentence.
 - Sound conversational, specific and naturally funny.
-- Build one clear premise and escalate it.
-- Use frequent punchlines without forcing every line.
-- End each monologue with a memorable twist or callback.
+- Build one clear premise, escalate it, and finish with a memorable
+  twist or callback.
+- Aim for frequent punchlines without forcing every line.
 - Avoid generic AI language, filler and repetitive metaphors.
 - Use an Indian perspective only when it naturally improves the joke.
 - Aim for 100-140 spoken words per monologue.
@@ -225,20 +349,20 @@ FACTUAL RULES
 - Use only the supplied story records.
 - If article_text_accessible is true, use details supported by the
   supplied article text, page title or description.
-- If article_text_accessible is false, only the headline is available.
-  Keep the script strictly to what the headline says.
-- Do not invent quotes, events, motives, allegations or extra context.
-- Never turn an allegation into a proven fact.
+- If article_text_accessible is false, only the headline and any RSS
+  description are available. Do not invent extra events, quotes,
+  motives, accusations or context.
+- Do not turn allegations into proven facts.
 - Do not claim independent fact-checking.
 - Never invent or change a source URL.
 - Use the exact source_url supplied for each story.
 - Include no other URLs.
-- If a story cannot support a safe joke, choose another story.
+- If a story cannot support a safe joke, choose another supplied story.
 
 OUTPUT FORMAT
 Return exactly THREE scripts in Markdown.
 
-For EACH story, include all six sections:
+For EACH story, include these six sections:
 
 ## Story 1
 **Headline:** exact supplied headline
@@ -246,9 +370,8 @@ For EACH story, include all six sections:
 **Spoken Monologue:** 100-140 words
 **Caption:** one short, catchy line
 **Video Description:** concise natural description
-**Fact-check Note:** If article text was accessible, say that the
-page was accessible but claims still need review. If not, explicitly
-say only the headline was available and the linked article must be
+**Fact-check Note:** State whether the article text was accessible.
+If only a headline was available, say the linked article must be
 checked before publication.
 
 Repeat using ## Story 2 and ## Story 3.
@@ -260,9 +383,7 @@ SUPPLIED STORIES:
 
 def call_gemini(prompt):
     payload = {
-        "contents": [
-            {"parts": [{"text": prompt}]}
-        ],
+        "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.9,
             "maxOutputTokens": 8192,
@@ -289,7 +410,6 @@ def call_gemini(prompt):
                 result = json.loads(response.read().decode("utf-8"))
 
             candidates = result.get("candidates", [])
-
             if not candidates:
                 raise RuntimeError(
                     "Gemini returned no candidates. Check model availability and quota."
@@ -298,8 +418,7 @@ def call_gemini(prompt):
             parts = candidates[0].get("content", {}).get("parts", [])
             output = "\n".join(
                 part.get("text", "")
-                for part in parts
-                if part.get("text")
+                for part in parts if part.get("text")
             ).strip()
 
             if not output:
@@ -317,27 +436,23 @@ def call_gemini(prompt):
                 ) from error
 
         except (TimeoutError, OSError) as error:
-            print(f"Network error: {error}")
-
+            print(f"Gemini network error: {error}")
             if attempt == 3:
                 raise
 
         wait_seconds = 15 * (attempt + 1)
-        print(f"Retrying in {wait_seconds} seconds...")
+        print(f"Retrying Gemini in {wait_seconds} seconds...")
         time.sleep(wait_seconds)
 
     raise RuntimeError("Gemini failed after all retry attempts.")
 
 
 def validate_output(text, stories):
-    """Reject invented URLs and incomplete script formatting."""
-
     allowed_urls = set()
 
     for story in stories:
         for key in ("source_url", "rss_url"):
             url = story.get(key, "").strip()
-
             if url:
                 allowed_urls.add(url.rstrip("/"))
 
@@ -354,8 +469,8 @@ def validate_output(text, stories):
 
     if invalid_urls:
         raise RuntimeError(
-            "Output rejected because it contains URLs not present "
-            "in the collected RSS data: " + ", ".join(invalid_urls)
+            "Output rejected: unapproved URLs found: "
+            + ", ".join(invalid_urls)
         )
 
     if len(set(found_urls)) != 3:
@@ -380,7 +495,6 @@ def validate_output(text, stories):
             )
 
     headings = re.findall(r"(?m)^## Story [1-3]\s*$", text)
-
     if len(headings) != 3:
         raise RuntimeError(
             "Output rejected: expected exactly three story headings."
@@ -399,8 +513,8 @@ def main():
 
     if len(stories) < 3:
         raise RuntimeError(
-            "Fewer than three headlines were collected. "
-            "Try running the workflow again."
+            "All news feeds returned fewer than three headlines. "
+            "No scripts were generated. Run the workflow again later."
         )
 
     generated = call_gemini(build_prompt(stories))
@@ -422,4 +536,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-            
