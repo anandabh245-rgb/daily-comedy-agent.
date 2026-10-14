@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -16,8 +17,12 @@ QUERIES = [
     "movies streaming music pop culture news when:2d",
 ]
 
+MAX_STORIES = 20
+MAX_RETRIES = 4
+
 
 def get_headlines():
+    """Collect recent headlines from Google News RSS."""
     stories = []
 
     for query in QUERIES:
@@ -29,136 +34,279 @@ def get_headlines():
 
         try:
             request = urllib.request.Request(
-                url, headers={"User-Agent": "Mozilla/5.0"}
+                url,
+                headers={"User-Agent": "Mozilla/5.0"}
             )
+
             with urllib.request.urlopen(request, timeout=20) as response:
                 root = ET.fromstring(response.read())
 
             for item in root.findall(".//item")[:8]:
-                title = item.findtext("title", "")
-                link = item.findtext("link", "")
+                title = item.findtext("title", "").strip()
+                link = item.findtext("link", "").strip()
+                source = item.findtext("source", "").strip()
+
                 if title and link:
-                    stories.append({"title": title, "link": link})
+                    stories.append({
+                        "title": title,
+                        "link": link,
+                        "source": source
+                    })
 
         except Exception as error:
-            print("RSS feed warning:", error)
+            print(f"RSS feed warning for '{query}': {error}")
 
-    unique = {story["title"]: story for story in stories}
+    unique = {}
+    for story in stories:
+        unique.setdefault(story["title"], story)
+
     return list(unique.values())
 
 
-def main():
-    stories = get_headlines()
+def build_prompt(stories):
+    """Build the writing brief for the channel's comedy persona."""
 
-    if len(stories) < 5:
-        raise RuntimeError(
-            "Not enough headlines. Try running the workflow again later."
-        )
+    headlines = json.dumps(
+        stories,
+        ensure_ascii=False,
+        indent=2
+    )
 
-    headlines = json.dumps(stories[:20], ensure_ascii=False, indent=2)
+    return f"""
+You are the HEAD WRITER for a distinctive, laugh-out-loud
+YouTube comedy channel.
 
-    prompt = f"""
-You are a fearless, genuinely funny internet-culture comedy writer creating original spoken monologues for a YouTube audience in the USA, UK, Canada, Australia, and English-speaking Europe.
+Your job is to write material for an INDIAN MALE YOUTUBER
+who appears on camera and performs stand-up-style commentary.
 
-IMPORTANT: The comedy must feel funny, not merely well-written. Avoid generic observations, predictable punchlines, polite sitcom humour, and jokes that sound like they were written by a corporate marketing team.
+He is not a news presenter, journalist, or faceless narrator.
 
-AUDIENCE AND STYLE:
+He is an expressive Indian guy in a cap, T-shirt or hoodie,
+looking directly into the camera and telling a hilarious story
+to an English-speaking audience in the USA, UK, Canada,
+Australia and other English-speaking countries.
 
-- Write like a naturally funny, chronically online person talking to friends.
-- Use conversational American English as the default, with occasional internet slang and meme-style phrasing where it fits.
-- Aim for chaotic, self-aware, slightly unhinged, relatable internet comedy.
-- Draw inspiration from current online behaviours: group-chat disasters, dating apps, situationships, doomscrolling, AI dependence, influencer drama, fake productivity, parasocial relationships, online arguments, and embarrassing everyday moments.
-- Use contemporary slang when appropriate, such as "cooked," "crash out," "aura," "glazing," "brain rot," or newer expressions supported by the research. Never force slang into every sentence or use a term incorrectly.
-- Make fun of absurd situations, online behaviour, and the narrator's own flaws. Avoid lazy stereotypes and punching down.
+THE CORE IDENTITY:
+An Indian guy observes Western celebrity culture, influencer
+drama, online behaviour and modern life, then reacts with the
+honesty, imagination and comic timing of a brilliant storyteller.
 
-JOKE-WRITING RULES:
-COMEDY DIRECTION: FUNNY REAL-LIFE STORYTELLING WITH A KILLER TWIST.
+His point of view should feel personal and original.
+He can be confused, overconfident, petty, dramatic, insecure,
+judgmental, self-aware or completely wrong about something.
+His own reactions and flaws are often funnier than the news.
 
+The viewer should feel:
+"This guy is absolutely ridiculous. I want to hear what
+he says about the next thing."
 
-Write original, spoken comedy monologues for an English-speaking audience in the US, UK, Canada, and Australia. The voice should feel like a naturally funny person recounting a real, embarrassing experience to a friend.
+Do not write generic news commentary with jokes added.
+Write an actual COMEDY PERFORMANCE.
 
-STORY STRUCTURE:
+COMEDY CRAFT:
+Use the principles of excellent stand-up storytelling:
+- A strong opening that immediately creates curiosity.
+- A clear premise the audience understands.
+- Specific details that make the situation visual.
+- Unexpected comparisons that reveal something funny.
+- Escalation: every new beat makes the problem worse.
+- Misleading assumptions and reversals.
+- Short punchlines mixed with conversational storytelling.
+- Pauses and deadpan reactions where appropriate.
+- Callbacks that make earlier details funnier.
+- A strong closing punchline that changes the audience's
+  understanding of the story.
 
-Start with a specific, funny confession or an unusual situation. No introductions or generic observations.
-1 Establish one clear, relatable problem.
-2 Give the narrator a believable but questionable response.
-3 Escalate through two or three connected events, each creating a new consequence.
-4 Include natural dialogue or a concrete detail that makes the scene feel lived-in.
-4 End with a genuinely surprising twist, reversal, or revelation that changes the meaning of an earlier detail.
+Be original. Do not imitate a particular comedian's
+voice, catchphrases, delivery, or recognizable material.
+
+INDIAN PERSPECTIVE:
+The performer is Indian, but the audience is international.
+
+Use Indian cultural observations when they genuinely improve
+the joke: family WhatsApp groups, relatives who know everything,
+Indian parents, middle-class ambition, bargaining, wedding
+politics, UPI payments, customer service, or the experience
+of explaining an internet trend to family.
+
+Use these selectively. Do not turn every script into a list
+of Indian references or make Indian identity the punchline.
+
+A strong joke might come from comparing the absurdity of
+American influencer culture with the practical logic of an
+Indian household, or from the narrator's own inability to
+understand something everyone else appears to understand.
+
+The reference must make the joke FUNNIER, not merely different.
+
+LANGUAGE AND DELIVERY:
+Write natural, conversational English.
+Use American English as the default where appropriate.
+The performer may use occasional Indian English expressions
+naturally, but never force slang into every sentence.
+
+The monologue must sound good when spoken aloud to a phone
+camera. Use contractions, varied sentence lengths, dramatic
+pauses, confidence, disbelief, self-roasting and occasional
+deadpan delivery.
+
+The performer should sound like a real person telling a
+friend an unbelievable story, not reading an essay.
 
 JOKE QUALITY:
-* Prioritize funny situations and human behavior over clever-sounding phrases.
-* Make the audience picture the scene.
-* Vary the rhythm: use setup, short punchlines, pauses, and occasional deadpan delivery.
-* Let some sentences be simple. Not every line needs a joke.
-* Make the final punchline stronger than the preceding jokes.
-* Use slang sparingly and naturally.
-* Avoid generic AI humor, forced metaphors, random comparisons, repetitive three-item lists, and familiar internet catchphrases used as substitutes for jokes.
-* Avoid predictable endings about being broke, deleting an app, being "cooked," or needing therapy unless the situation creates a genuinely unexpected new angle.
-* Do not imitate a specific comedian or recycle recognizable jokes.
+Prioritize human behaviour and funny situations over
+clever-sounding but empty phrases.
 
-ORIGINALITY AND REALISM:
-Invent fictional everyday scenarios when no factual source is needed.
-When using a news story, preserve verifiable facts and clearly separate commentary from invention.
-Never fabricate quotes or claim a fictional event happened to a real person.
-Make each script distinct in its premise, sequence of events, and final twist.
-FINAL SILENT REVIEW:
-Before returning a script, check whether the opening grabs attention, the story escalates naturally, the jokes sound believable aloud, and the ending genuinely surprises the audience. Rewrite any weak or predictable sections. Do not include this review in the output.
+Avoid:
+- "The internet is crazy."
+- "What is happening to the world?"
+- "Let that sink in."
+- Generic bro jokes.
+- Forced metaphors and random absurdity without a setup.
+- Repetitive three-item lists.
+- Slang used as a substitute for a punchline.
+- Predictable endings about being broke, deleting an app,
+  needing therapy, or being "cooked".
+- Fake dialogue presented as a real quotation.
+- A joke in every single sentence.
+- Long introductions and unnecessary explanations.
 
-Rewrite weak sections before returning the final script. Do not include this evaluation in the output.
+Allow some sentences to breathe. Make the big jokes land.
 
-CURRENT INTERNET CULTURE:
-Use the supplied news headlines as research leads. Where possible, identify relevant recent online conversations and cultural references. Do not pretend to know a trend is currently viral without evidence. If a topic is uncertain or the headlines are weak, use a universally relatable internet-life scenario instead. Do not invent news, quotes, allegations, or source details.
+STORYTELLING STRUCTURE:
+Each script should have:
+1. An immediate, funny opening.
+2. One clear central premise.
+3. A believable but questionable reaction by the narrator.
+4. Two or three connected escalations.
+5. A vivid detail or short piece of imagined dialogue.
+6. A surprising final reversal or punchline.
 
-CREATE EXACTLY THREE DISTINCT MONOLOGUES:
+Do not mechanically follow this structure if a different
+sequence makes a particular story funnier.
 
-- Each must contain 110–145 spoken words.
-- Give each a different premise, comedic angle, and punchline style.
-- Avoid making all three scripts about celebrities or movies.
-- Prioritize laugh-out-loud writing over mentioning lots of trending topics.
-- The performer is an Indian creator speaking English to a Western audience. Do not make every joke about India; use that background only when it genuinely improves a joke.
+NEWS AND FACTUAL ACCURACY:
+Use the supplied headlines as research leads, not verified facts.
 
-RESEARCH LEADS:
-{headlines}
+Do not invent celebrity statements, allegations, relationships,
+statistics, feuds or events and present them as true.
 
-OUTPUT FORMAT FOR EACH SCRIPT:
+The narrator may imagine what he would do in a situation.
+Clearly hypothetical comedy scenarios are allowed.
 
-1. Number and catchy title.
-2. Source URL for any timely factual premise; write "No factual source needed" for evergreen comedy.
-3. Full spoken monologue.
-4. Three short, funny on-screen caption highlights.
-5. One-sentence video description and relevant hashtags.
-6. Brief fact-check reminder for any claims that need verification.
+If a headline cannot support a reliable factual premise,
+write a funny evergreen story about online behaviour instead.
+Mark the source as "No factual source needed" for that script.
 
-FINAL QUALITY CHECK:
-Before returning the scripts, silently rate each one for originality, laugh potential, natural spoken delivery, and strength of its final punchline. Rewrite weak scripts before presenting them. Do not include the ratings or your internal evaluation.
+Never use a tragedy or a vulnerable person's suffering as
+the target of a joke.
 
+THE THREE SCRIPTS MUST BE DIFFERENT:
+Create EXACTLY THREE complete monologues.
+
+Use different premises, emotional attitudes, story structures,
+and punchline styles.
+
+At least one script should, where suitable source material
+allows, use current celebrity or influencer news.
+
+The remaining scripts may cover internet culture, relationships,
+online embarrassment, AI, dating apps, group chats, social
+media behaviour, everyday awkwardness or other relatable
+modern experiences.
+
+Do not make all three scripts celebrity roasts.
+Do not make all three scripts about India.
+Do not reuse the same joke structure or final twist.
+
+LENGTH:
+Each spoken monologue must contain 110-145 words.
+The title, captions, description and fact-check note do not
+count toward the spoken word limit.
+
+ON-CAMERA PERFORMANCE:
+For each script, add brief acting notes indicating where
+the performer should use:
+- A facial expression or change in expression.
+- A dramatic pause or deadpan look.
+- A change in pace or emphasis.
+- A physical reaction when useful.
+
+These are practical performance directions, not extra
+spoken words.
+
+ON-SCREEN CAPTIONS:
+Provide exactly three short caption highlights per script.
+Use memorable phrases from the monologue or concise versions
+of its best jokes. Make them readable on a phone screen.
+
+YOUTUBE PACKAGING:
+Provide a clickable title under 70 characters, a one-sentence
+description, relevant hashtags and a brief fact-check reminder.
+
+Avoid misleading titles or claims that the video does not
+actually support.
+
+FINAL SILENT QUALITY CHECK:
+Before returning the scripts, check each one for:
+- Immediate hook.
+- Originality.
+- Indian point of view where it naturally helps.
+- Natural spoken delivery.
+- Specific, escalating jokes.
+- A genuinely strong final punchline.
+- Correct word count.
+- Accurate treatment of factual claims.
+
+Rewrite weak material before returning it.
+Do not reveal ratings or internal evaluations.
+
+OUTPUT FORMAT:
 Return readable Markdown only.
-Use these research leads:
+
+For each of exactly THREE scripts, use this structure:
+
+## SCRIPT 1: [Catchy topic]
+
+**Source URL:** [URL or "No factual source needed"]
+
+**YouTube Title:** [Under 70 characters]
+
+**Spoken Monologue:**
+[110-145 spoken words]
+
+**Performance Notes:**
+- [Expression, pause or delivery direction]
+- [Expression, pause or delivery direction]
+- [Expression, pause or delivery direction]
+
+**On-Screen Caption Highlights:**
+- [Caption 1]
+- [Caption 2]
+- [Caption 3]
+
+**Description and Hashtags:**
+[One sentence and relevant hashtags]
+
+**Fact-Check Reminder:**
+[Claims to verify, or state that the premise is fictional
+or evergreen and has no factual claim requiring verification.]
+
+Repeat for scripts 2 and 3.
+
+NEWS RESEARCH LEADS:
 {headlines}
 
-Treat headlines as leads, not verified facts. Do not invent quotes, events,
-relationships, or allegations. If uncertain, choose a broader opinion or
-evergreen internet-culture topic. Avoid jokes about tragedies and vulnerable
-people. Do not copy existing jokes, scripts, lyrics, or catchphrases.
+Remember: the news is only the setup.
+The performer and the comedy are the main attraction.
 
-For each script provide:
-1. Number and topic
-2. Source URL for any timely factual premise
-3. Title under 70 characters
-4. Full spoken monologue
-5. Three short on-screen caption highlights
-6. One-sentence description and relevant hashtags
-7. A brief fact-check reminder
-
-Clearly mark anything that needs verification. Return readable Markdown only.
+Write something a person would actually enjoy watching,
+laugh at, quote to a friend, and share.
 """
 
-    
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-    }
-        
+
+def call_gemini(prompt):
+    """Call Gemini with retries for temporary API failures."""
 
     endpoint = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -167,42 +315,117 @@ Clearly mark anything that needs verification. Return readable Markdown only.
         + urllib.parse.quote(API_KEY)
     )
 
+    payload = {
+        "contents": [
+            {"parts": [{"text": prompt}]}
+        ],
+        "generationConfig": {
+            "temperature": 0.95,
+            "responseMimeType": "text/plain"
+        }
+    }
+
+    request_data = json.dumps(payload).encode("utf-8")
+
     request = urllib.request.Request(
         endpoint,
-        data=json.dumps(payload).encode("utf-8"),
+        data=request_data,
         headers={"Content-Type": "application/json"},
-        method="POST",
+        method="POST"
     )
 
-    
-    import time
-
-    for attempt in range(4):
+    for attempt in range(MAX_RETRIES):
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                result = json.loads(response.read().decode("utf-8"))
-            break
-        except (urllib.error.HTTPError, TimeoutError, OSError) as error:
-            message = error.read().decode("utf-8")
-            print("Gemini API error:", message)
+            with urllib.request.urlopen(
+                request, timeout=180
+            ) as response:
+                result = json.loads(
+                    response.read().decode("utf-8")
+                )
 
-            if error.code not in (429, 500, 502, 503, 504) or attempt == 3:
+            candidates = result.get("candidates", [])
+            if not candidates:
+                raise RuntimeError(
+                    "Gemini returned no candidates: "
+                    + json.dumps(result)[:1200]
+                )
+
+            parts = candidates[0].get(
+                "content", {}
+            ).get("parts", [])
+
+            generated_text = "\n".join(
+                part["text"]
+                for part in parts
+                if "text" in part
+            ).strip()
+
+            if not generated_text:
+                raise RuntimeError("Gemini returned empty text.")
+
+            return generated_text
+
+        except urllib.error.HTTPError as error:
+            details = error.read().decode(
+                "utf-8", errors="replace"
+            )
+            print(f"Gemini HTTP error {error.code}: {details[:1200]}")
+
+            retryable = error.code in (
+                408, 429, 500, 502, 503, 504
+            )
+
+            if not retryable or attempt == MAX_RETRIES - 1:
                 raise
 
-            wait = 15 * (attempt + 1)
-            print(f"Temporary API error. Retrying in {wait} seconds...")
-            time.sleep(wait)
-            
+        except (TimeoutError, urllib.error.URLError, OSError) as error:
+            print(f"Gemini connection error: {error}")
 
-    generated_text = result["candidates"][0]["content"]["parts"][0]["text"]
+            if attempt == MAX_RETRIES - 1:
+                raise
+
+        wait = 10 * (attempt + 1)
+        print(f"Retrying in {wait} seconds...")
+        time.sleep(wait)
+
+    raise RuntimeError("Gemini failed after all retry attempts.")
+
+
+def main():
+    print("Starting Daily Comedy Agent...")
+    print("Comedy persona: Indian on-camera stand-up commentator")
+
+    stories = get_headlines()
+
+    if len(stories) < 5:
+        raise RuntimeError(
+            f"Only {len(stories)} headlines collected. "
+            "Try running the workflow again later."
+        )
+
+    selected_stories = stories[:MAX_STORIES]
+
+    print(f"Collected {len(stories)} unique headlines.")
+
+    prompt = build_prompt(selected_stories)
+    generated_text = call_gemini(prompt)
+
+    if not generated_text.strip():
+        raise RuntimeError("Generated scripts are empty.")
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    output = Path("output")
-    output.mkdir(exist_ok=True)
-    filename = output / f"{today}.md"
-    filename.write_text(generated_text, encoding="utf-8")
 
-    print(f"Saved scripts to {filename}")
+    output = Path("output")
+    output.mkdir(parents=True, exist_ok=True)
+
+    filename = output / f"{today}.md"
+
+    filename.write_text(
+        generated_text.rstrip() + "\n",
+        encoding="utf-8"
+    )
+
+    print(f"Saved comedy scripts to {filename}")
 
 
 if __name__ == "__main__":
