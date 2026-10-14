@@ -4,534 +4,369 @@ import json
 import time
 import re
 import html
-import random
 import urllib.request
 import urllib.parse
 import urllib.error
 import xml.etree.ElementTree as ET
-from html.parser import HTMLParser
 from datetime import datetime, timezone
 from pathlib import Path
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+MODEL = "gemini-3.5-flash-lite"
+OUTPUT_DIR = Path("output")
+MAX_STORIES = 3
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
-)
-
-GOOGLE_QUERIES = [
-    "celebrity entertainment news when:2d",
+SEARCHES = [
+    "US UK celebrity entertainment when:2d",
     "viral internet culture influencer news when:2d",
     "movies music streaming pop culture when:2d",
     "hip hop social media celebrity drama when:2d",
 ]
 
-# Used only if Google News is unavailable.
-FALLBACK_FEEDS = [
+BACKUP_FEEDS = [
     "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
     "https://variety.com/feed/",
     "https://www.theguardian.com/culture/rss",
-    "https://www.hollywoodreporter.com/feed/",
+    "https://deadline.com/feed/",
 ]
 
-
-class ArticleParser(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.title_parts = []
-        self.text_parts = []
-        self.description = ""
-        self.in_title = False
-        self.skip_depth = 0
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-
-        if tag == "title":
-            self.in_title = True
-
-        if tag in ("script", "style", "noscript", "svg"):
-            self.skip_depth += 1
-
-        if tag == "meta":
-            key = (
-                attrs.get("property", "")
-                or attrs.get("name", "")
-            ).lower()
-
-            if key in (
-                "og:description",
-                "description",
-                "twitter:description",
-            ):
-                value = attrs.get("content", "").strip()
-                if len(value) > len(self.description):
-                    self.description = value
-
-    def handle_endtag(self, tag):
-        if tag == "title":
-            self.in_title = False
-
-        if tag in ("script", "style", "noscript", "svg"):
-            self.skip_depth = max(0, self.skip_depth - 1)
-
-    def handle_data(self, data):
-        value = " ".join(data.split())
-
-        if not value:
-            return
-
-        if self.in_title:
-            self.title_parts.append(value)
-
-        if self.skip_depth == 0 and len(value) > 25:
-            self.text_parts.append(value)
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 14) "
+        "AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36"
+    )
+}
 
 
-def download_url(url, timeout=25, attempts=3):
-    """Retry temporary HTTP errors and network failures."""
-    last_error = None
-
+def download_url(url, attempts=3):
     for attempt in range(attempts):
-        request = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Accept": "application/rss+xml, application/xml, text/xml, text/html, */*",
-            },
-        )
-
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return response.read(2_000_000), response.geturl(), (
-                    response.headers.get("Content-Type", "")
-                )
-
-        except urllib.error.HTTPError as error:
-            last_error = error
-
-            # Retry only temporary or rate-limit errors.
-            if error.code not in (408, 425, 429, 500, 502, 503, 504):
-                break
-
-            print(
-                f"Temporary HTTP {error.code}; "
-                f"attempt {attempt + 1}/{attempts}"
-            )
-
-        except (TimeoutError, OSError) as error:
-            last_error = error
-            print(f"Network issue; attempt {attempt + 1}/{attempts}: {error}")
-
-        if attempt < attempts - 1:
-            time.sleep((2 ** attempt) * 3 + random.uniform(0, 2))
-
-    raise RuntimeError(f"Could not fetch feed: {last_error}")
+            request = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(request, timeout=25) as response:
+                return response.read().decode("utf-8", errors="replace")
+        except Exception as exc:
+            print(f"Download attempt {attempt + 1} failed: {exc}")
+            if attempt + 1 < attempts:
+                time.sleep(2 ** attempt)
+    return None
 
 
-def parse_feed(xml_bytes, feed_name):
-    """Read standard RSS or Atom feed entries."""
-    root = ET.fromstring(xml_bytes)
+def clean_text(value):
+    value = re.sub(r"<[^>]+>", " ", value or "")
+    value = html.unescape(value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def parse_feed(feed_url):
+    content = download_url(feed_url)
+    if not content:
+        return []
+
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        print(f"Invalid RSS/XML feed: {feed_url}: {exc}")
+        return []
+
     stories = []
 
-    # RSS format
     for item in root.findall(".//item"):
-        title = item.findtext("title", "").strip()
-        link = item.findtext("link", "").strip()
-        published = (
-            item.findtext("pubDate", "")
-            or item.findtext("{http://purl.org/dc/elements/1.1/}date", "")
-        ).strip()
+        title = clean_text(item.findtext("title"))
+        link = (item.findtext("link") or "").strip()
+        description = clean_text(item.findtext("description"))
 
-        description = item.findtext("description", "").strip()
-
-        if title and link:
+        if title and link.startswith(("https://", "http://")):
             stories.append({
-                "title": html.unescape(title),
-                "rss_url": link,
-                "published": published,
-                "feed": feed_name,
-                "feed_description": html.unescape(
-                    re.sub(r"<[^>]+>", " ", description)
-                )[:1500],
+                "title": title,
+                "url": link,
+                "description": description,
+                "feed": feed_url,
             })
 
-    # Atom format, in case a feed uses it
-    if not stories:
-        ns = {"a": "http://www.w3.org/2005/Atom"}
+    # Support Atom feeds as well as RSS feeds.
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    for entry in root.findall(".//atom:entry", ns):
+        title = clean_text(entry.findtext("atom:title", default="", namespaces=ns))
+        summary = clean_text(
+            entry.findtext("atom:summary", default="", namespaces=ns)
+        )
+        link_element = entry.find("atom:link", ns)
+        link = link_element.get("href", "") if link_element is not None else ""
 
-        for entry in root.findall(".//a:entry", ns):
-            title_node = entry.find("a:title", ns)
-            link_node = entry.find("a:link", ns)
-            date_node = entry.find("a:updated", ns)
-
-            title = (
-                "".join(title_node.itertext()).strip()
-                if title_node is not None else ""
-            )
-            link = (
-                link_node.attrib.get("href", "").strip()
-                if link_node is not None else ""
-            )
-            published = (
-                date_node.text.strip()
-                if date_node is not None and date_node.text else ""
-            )
-
-            if title and link:
-                stories.append({
-                    "title": html.unescape(title),
-                    "rss_url": link,
-                    "published": published,
-                    "feed": feed_name,
-                    "feed_description": "",
-                })
+        if title and link.startswith(("https://", "http://")):
+            stories.append({
+                "title": title,
+                "url": link,
+                "description": summary,
+                "feed": feed_url,
+            })
 
     return stories
 
 
-def collect_google_news():
+def collect_stories():
     collected = []
+    seen_urls = set()
+    seen_titles = set()
 
-    for query in GOOGLE_QUERIES:
+    for query in SEARCHES:
+        encoded = urllib.parse.quote(query)
         url = (
             "https://news.google.com/rss/search?q="
-            + urllib.parse.quote(query)
+            + encoded
             + "&hl=en-US&gl=US&ceid=US:en"
         )
 
-        try:
-            data, _, _ = download_url(url, attempts=3)
-            collected.extend(parse_feed(data, "Google News"))
-            print(f"Google News query succeeded: {query}")
+        print(f"Checking Google News: {query}")
+        for story in parse_feed(url):
+            key_url = story["url"].split("&")[0]
+            key_title = story["title"].lower()
 
-        except Exception as error:
-            print(f"Google News query failed: {query} — {error}")
+            if key_url not in seen_urls and key_title not in seen_titles:
+                seen_urls.add(key_url)
+                seen_titles.add(key_title)
+                collected.append(story)
 
-        # Avoid sending a burst of requests.
         time.sleep(2)
 
+    if len(collected) < MAX_STORIES:
+        print("Not enough Google News stories. Checking backup feeds.")
+
+        for feed in BACKUP_FEEDS:
+            for story in parse_feed(feed):
+                key_url = story["url"].split("&")[0]
+                key_title = story["title"].lower()
+
+                if key_url not in seen_urls and key_title not in seen_titles:
+                    seen_urls.add(key_url)
+                    seen_titles.add(key_title)
+                    collected.append(story)
+
+            if len(collected) >= 12:
+                break
+
+    print(f"Collected {len(collected)} unique headlines.")
     return collected
 
 
-def collect_fallback_feeds():
-    collected = []
-
-    for url in FALLBACK_FEEDS:
-        try:
-            data, _, _ = download_url(url, attempts=2)
-            entries = parse_feed(data, url)
-            collected.extend(entries)
-            print(f"Fallback feed returned {len(entries)} stories: {url}")
-
-        except Exception as error:
-            print(f"Fallback feed unavailable: {url} — {error}")
-
-        time.sleep(1)
-
-    return collected
-
-
-def collect_stories():
-    stories = {}
-
-    # Try Google News first.
-    for story in collect_google_news():
-        stories.setdefault(story["title"], story)
-
-    if len(stories) < 3:
-        print("Google News returned too few stories. Trying fallback feeds.")
-
-        for story in collect_fallback_feeds():
-            stories.setdefault(story["title"], story)
-
-    result = list(stories.values())
-    print(f"Collected {len(result)} unique headlines across feeds.")
-    return result
-
-
-def fetch_article_metadata(url):
-    """Try to read article text; keep the RSS item if access is blocked."""
-    try:
-        raw, final_url, content_type = download_url(
-            url, timeout=15, attempts=1
-        )
-
-        if "html" not in content_type.lower():
-            return final_url, "", "", ""
-
-        charset = "utf-8"
-        page = raw.decode(charset, errors="replace")
-
-        parser = ArticleParser()
-        parser.feed(page)
-
-        title = html.unescape(" ".join(parser.title_parts)).strip()
-        description = html.unescape(parser.description).strip()
-        body = html.unescape(" ".join(parser.text_parts))[:5000]
-
-        return final_url, title, description, body
-
-    except Exception as error:
-        print(f"Article unavailable; retaining headline: {error}")
-        return url, "", "", ""
-
-
-def prepare_stories():
-    headlines = collect_stories()
-    prepared = []
-
-    for story in headlines[:30]:
-        final_url, page_title, description, article_text = (
-            fetch_article_metadata(story["rss_url"])
-        )
-
-        story["source_url"] = final_url or story["rss_url"]
-        story["page_title"] = page_title
-        story["description"] = description
-        story["article_text"] = article_text
-        story["article_accessible"] = (
-            len(article_text) >= 250 or len(description) >= 80
-        )
-
-        if story["article_accessible"]:
-            print(f"Article text available: {story['title']}")
-        else:
-            print(f"Headline only; manual review needed: {story['title']}")
-
-        prepared.append(story)
-
-        if len(prepared) >= 15:
-            break
-
-        time.sleep(0.25)
-
-    print(f"Stories available for drafting: {len(prepared)}")
-    return prepared
-
-
-def build_prompt(stories):
-    supplied = []
-
-    for story in stories:
-        supplied.append({
-            "headline": story["title"],
-            "source_url": story["source_url"],
-            "published": story["published"],
-            "feed": story["feed"],
-            "feed_description": story.get("feed_description", ""),
-            "article_page_title": story["page_title"],
-            "page_description": story["description"],
-            "article_excerpt_if_accessible": story["article_text"][:3500],
-            "article_text_accessible": story["article_accessible"],
-        })
-
-    return f"""
-You are a sharp stand-up comedy writer creating original spoken
-comedy for audiences in the USA, UK, Canada and Australia.
-
-Write exactly THREE scripts using THREE DIFFERENT supplied stories.
-
-COMEDY STYLE
-- Hook the viewer in the first sentence.
-- Sound conversational, specific and naturally funny.
-- Build one clear premise, escalate it, and finish with a memorable
-  twist or callback.
-- Aim for frequent punchlines without forcing every line.
-- Avoid generic AI language, filler and repetitive metaphors.
-- Use an Indian perspective only when it naturally improves the joke.
-- Aim for 100-140 spoken words per monologue.
-- Focus jokes on absurd situations, not humiliating vulnerable people.
-
-FACTUAL RULES
-- Use only the supplied story records.
-- If article_text_accessible is true, use details supported by the
-  supplied article text, page title or description.
-- If article_text_accessible is false, only the headline and any RSS
-  description are available. Do not invent extra events, quotes,
-  motives, accusations or context.
-- Do not turn allegations into proven facts.
-- Do not claim independent fact-checking.
-- Never invent or change a source URL.
-- Use the exact source_url supplied for each story.
-- Include no other URLs.
-- If a story cannot support a safe joke, choose another supplied story.
-
-OUTPUT FORMAT
-Return exactly THREE scripts in Markdown.
-
-For EACH story, include these six sections:
-
-## Story 1
-**Headline:** exact supplied headline
-**Source URL:** exact supplied source_url
-**Spoken Monologue:** 100-140 words
-**Caption:** one short, catchy line
-**Video Description:** concise natural description
-**Fact-check Note:** State whether the article text was accessible.
-If only a headline was available, say the linked article must be
-checked before publication.
-
-Repeat using ## Story 2 and ## Story 3.
-
-SUPPLIED STORIES:
-{json.dumps(supplied, ensure_ascii=False, indent=2)}
-"""
-
-
-def call_gemini(prompt):
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.9,
-            "maxOutputTokens": 8192,
-        },
-    }
+def gemini_generate(prompt):
+    if not API_KEY:
+        raise RuntimeError("GEMINI_API_KEY secret is missing.")
 
     endpoint = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        + urllib.parse.quote(MODEL, safe="-._")
+        + MODEL
         + ":generateContent?key="
         + urllib.parse.quote(API_KEY)
     )
 
-    for attempt in range(4):
-        request = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+    body = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }],
+        "generationConfig": {
+            "temperature": 0.75,
+            "responseMimeType": "application/json",
+        },
+    }
 
-        try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                result = json.loads(response.read().decode("utf-8"))
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
 
-            candidates = result.get("candidates", [])
-            if not candidates:
-                raise RuntimeError(
-                    "Gemini returned no candidates. Check model availability and quota."
-                )
+    with urllib.request.urlopen(request, timeout=90) as response:
+        data = json.loads(response.read().decode("utf-8"))
 
-            parts = candidates[0].get("content", {}).get("parts", [])
-            output = "\n".join(
-                part.get("text", "")
-                for part in parts if part.get("text")
-            ).strip()
-
-            if not output:
-                raise RuntimeError("Gemini returned empty text.")
-
-            return output
-
-        except urllib.error.HTTPError as error:
-            details = error.read().decode("utf-8", errors="replace")
-            print(f"Gemini HTTP {error.code}: {details[:1000]}")
-
-            if error.code not in (429, 500, 502, 503, 504) or attempt == 3:
-                raise RuntimeError(
-                    f"Gemini request failed with HTTP {error.code}."
-                ) from error
-
-        except (TimeoutError, OSError) as error:
-            print(f"Gemini network error: {error}")
-            if attempt == 3:
-                raise
-
-        wait_seconds = 15 * (attempt + 1)
-        print(f"Retrying Gemini in {wait_seconds} seconds...")
-        time.sleep(wait_seconds)
-
-    raise RuntimeError("Gemini failed after all retry attempts.")
-
-
-def validate_output(text, stories):
-    allowed_urls = set()
-
-    for story in stories:
-        for key in ("source_url", "rss_url"):
-            url = story.get(key, "").strip()
-            if url:
-                allowed_urls.add(url.rstrip("/"))
-
-    found_urls = re.findall(r'https?://[^\s<>\]\)"]+', text)
-    found_urls = [
-        url.rstrip(".,;:!?").rstrip("/")
-        for url in found_urls
-    ]
-
-    invalid_urls = sorted({
-        url for url in found_urls
-        if url.rstrip("/") not in allowed_urls
-    })
-
-    if invalid_urls:
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError, TypeError):
         raise RuntimeError(
-            "Output rejected: unapproved URLs found: "
-            + ", ".join(invalid_urls)
+            "Gemini returned no usable text: "
+            + json.dumps(data)[:1000]
         )
 
-    if len(set(found_urls)) != 3:
-        raise RuntimeError(
-            "Output must contain exactly three distinct source URLs; "
-            f"found {len(set(found_urls))}."
-        )
 
-    required_sections = [
-        "Headline:",
-        "Source URL:",
-        "Spoken Monologue:",
-        "Caption:",
-        "Video Description:",
-        "Fact-check Note:",
-    ]
+def build_prompt(stories):
+    supplied = json.dumps(stories, ensure_ascii=False, indent=2)
 
-    for section in required_sections:
-        if text.count(section) < 3:
-            raise RuntimeError(
-                f"Output rejected: missing section '{section}'."
-            )
+    return f"""
+You are a sharp, natural stand-up comedy writer for a US, UK, Canadian,
+and Australian audience.
 
-    headings = re.findall(r"(?m)^## Story [1-3]\s*$", text)
-    if len(headings) != 3:
-        raise RuntimeError(
-            "Output rejected: expected exactly three story headings."
-        )
+Create UP TO THREE short news-based comedy scripts using ONLY the supplied
+story records below.
 
-    print("Output structure and source URL checks passed.")
+STORY RECORDS:
+{supplied}
+
+STRICT FACTUAL RULES:
+1. Use only claims supported by the supplied headline or description.
+2. A headline alone is not independent verification. Do not say that you
+   read or verified an article unless the supplied record proves it.
+3. Do not invent quotes, expert opinions, motives, actions, injuries,
+   legal developments, dates, statistics, or reactions.
+4. Do not present a rumour or allegation as established fact.
+5. For sensitive allegations, medical events, or criminal claims, use
+   cautious wording and only include details explicitly supported.
+6. If the evidence is too thin or the story is too sensitive to joke about
+   responsibly, skip it.
+7. Do not fabricate a source URL. Copy the exact URL from the supplied record.
+8. Comedy exaggeration must be clearly figurative, not a fake news detail.
+9. Avoid cruel jokes about victims, serious injuries, or unverified claims.
+10. Prefer stories with enough context to support a meaningful comedy angle.
+
+STYLE:
+- Start with a fast, compelling hook.
+- Use conversational stand-up storytelling.
+- Build tension and absurdity, then deliver a strong twist or callback.
+- Avoid generic AI phrases and repetitive punchlines.
+- Target approximately 100-140 spoken words per script.
+- Make each script sound distinct and human.
+
+OUTPUT:
+Return valid JSON only, in this format:
+{{
+  "stories": [
+    {{
+      "headline": "Accurate headline",
+      "source_url": "Exact supplied URL",
+      "spoken_monologue": "Comedy script",
+      "caption": "Short social caption",
+      "video_description": "Brief description",
+      "fact_check_note": "Clearly state what is supported and what remains unverified"
+    }}
+  ]
+}}
+
+Return no more than 3 stories. Return fewer if fewer are suitable.
+If no story meets the rules, return an empty stories array.
+"""
+
+
+def validate_results(results, supplied_stories):
+    approved_urls = {story["url"] for story in supplied_stories}
+    valid = []
+    seen = set()
+
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+
+        required = [
+            "headline",
+            "source_url",
+            "spoken_monologue",
+            "caption",
+            "video_description",
+            "fact_check_note",
+        ]
+
+        if any(not str(item.get(key, "")).strip() for key in required):
+            print("Skipping a script with missing required fields.")
+            continue
+
+        url = item["source_url"].strip()
+        if url not in approved_urls:
+            print("Skipping script with an unrecognized source URL.")
+            continue
+
+        if url in seen:
+            print("Skipping duplicate source URL.")
+            continue
+
+        monologue = item["spoken_monologue"].strip()
+        word_count = len(monologue.split())
+
+        if word_count < 60:
+            print("Skipping a script that is too short.")
+            continue
+
+        # This is a basic quality filter, not a guarantee of truth.
+        if re.search(
+            r"\b(experts are praising|experts confirmed|everyone knows)\b",
+            monologue,
+            re.IGNORECASE,
+        ):
+            print("Skipping unsupported expert/generalization claim.")
+            continue
+
+        seen.add(url)
+        valid.append(item)
+
+        if len(valid) >= MAX_STORIES:
+            break
+
+    return valid
 
 
 def main():
     if not API_KEY:
         raise RuntimeError(
-            "GEMINI_API_KEY is missing. Check your GitHub Actions secret."
+            "GEMINI_API_KEY is not configured in GitHub Actions secrets."
         )
 
-    stories = prepare_stories()
+    stories = collect_stories()
 
-    if len(stories) < 3:
+    if not stories:
         raise RuntimeError(
-            "All news feeds returned fewer than three headlines. "
-            "No scripts were generated. Run the workflow again later."
+            "No headlines were collected. Check the feeds and rerun later."
         )
 
-    generated = call_gemini(build_prompt(stories))
-    validate_output(generated, stories)
+    prompt = build_prompt(stories)
+
+    try:
+        raw = gemini_generate(prompt)
+        result = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(f"Script generation failed: {exc}") from exc
+
+    generated = result.get("stories", [])
+    if not isinstance(generated, list):
+        raise RuntimeError("Gemini output did not contain a stories list.")
+
+    approved = validate_results(generated, stories)
+
+    if not approved:
+        print("No scripts passed validation. Nothing will be published.")
+        return
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    output_dir = Path("output")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = OUTPUT_DIR / f"{today}.md"
 
-    output_file = output_dir / f"{today}.md"
-    output_file.write_text(generated + "\n", encoding="utf-8")
+    sections = [
+        f"# Daily Comedy Scripts — {today}",
+        "",
+        f"Generated scripts: {len(approved)}",
+        "",
+        "> Drafts only. Check source reporting before publishing.",
+        "",
+    ]
 
-    print(f"Successfully saved scripts: {output_file}")
-    print(
-        "Reminder: URL checks do not prove every claim is true. "
-        "Review fact-check notes before publishing."
-    )
+    for index, item in enumerate(approved, start=1):
+        sections.extend([
+            f"## Story {index}",
+            f"**Headline:** {item['headline']}",
+            f"**Source URL:** {item['source_url']}",
+            "",
+            "**Spoken Monologue:**",
+            item["spoken_monologue"].strip(),
+            "",
+            f"**Caption:** {item['caption'].strip()}",
+            "",
+            f"**Video Description:** {item['video_description'].strip()}",
+            "",
+            f"**Fact-check Note:** {item['fact_check_note'].strip()}",
+            "",
+            "---",
+            "",
+        ])
+
+    output_path.write_text("\n".join(sections), encoding="utf-8")
+    print(f"Saved {len(approved)} scripts to {output_path}")
 
 
 if __name__ == "__main__":
