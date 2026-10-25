@@ -1,620 +1,759 @@
-
-#!/usr/bin/env python3
-"""Daily Comedy Agent — premise-first, retention-focused comedy writing."""
-
-import html
-import json
 import os
 import re
-import sys
+import json
 import time
-import urllib.parse
+import html
+import random
 import urllib.request
+import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 from pathlib import Path
+from email.utils import parsedate_to_datetime
+
+# ============================================================
+# DAILY COMEDY AGENT
+# Version: Premise-First Stand-Up Engine
+#
+# Purpose:
+# - Find current celebrity and internet-culture stories.
+# - Turn each story into a 40-45 second comedy routine.
+# - Use original jokes, escalating premises and strong endings.
+# - Save three scripts for manual review and recording.
+# ============================================================
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+MODEL = os.environ.get(
+    "GEMINI_MODEL",
+    "gemini-3.5-flash-lite"
+).strip()
 
 OUTPUT_DIR = Path("output")
 TARGET_SCRIPTS = 3
-MIN_WORDS = 90
-MAX_WORDS = 112
-MAX_HEADLINES = 24
-MAX_ATTEMPTS = 4
-USER_AGENT = "DailyComedyAgent/5.0"
 
-FEED_QUERIES = [
+# About 40-45 seconds at a natural performance pace.
+IDEAL_MIN_WORDS = 85
+IDEAL_MAX_WORDS = 100
+
+# Allow a little flexibility so a good script isn't rejected
+# because of a small word-count difference.
+ACCEPT_MIN_WORDS = 75
+ACCEPT_MAX_WORDS = 110
+
+MAX_STORY_ATTEMPTS = 4
+MAX_HEADLINES_TO_COLLECT = 35
+REQUEST_TIMEOUT = 25
+
+USER_AGENT = (
+    "Mozilla/5.0 (compatible; DailyComedyAgent/3.0; "
+    "+https://github.com/)"
+)
+
+SEARCH_QUERIES = [
     "US UK celebrity entertainment news when:2d",
     "viral internet culture influencer news when:2d",
     "movies streaming music pop culture news when:2d",
-    "celebrity reality TV social media drama when:2d",
-    "hip hop social media celebrity news when:2d",
-    "celebrity interview controversy public reaction when:2d",
+    "celebrity social media drama when:2d",
+    "hip hop celebrity internet controversy when:2d",
 ]
 
-FALLBACK_FEEDS = [
-    "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
-    "https://www.theguardian.com/culture/film/rss",
-    "https://www.theguardian.com/music/rss",
-]
+# ============================================================
+# NETWORK HELPERS
+# ============================================================
 
-
-def clean_text(value):
-    value = html.unescape(str(value or ""))
-    value = re.sub(r"<[^>]+>", " ", value)
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def word_count(text):
-    return len(re.findall(r"\b[\w’'-]+\b", text or ""))
-
-
-def fetch_url(url, timeout=20):
+def http_get(url, timeout=REQUEST_TIMEOUT):
     request = urllib.request.Request(
         url,
         headers={
             "User-Agent": USER_AGENT,
-            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            "Accept": (
+                "application/rss+xml, application/xml, "
+                "text/xml, text/plain, */*"
+            ),
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read().decode("utf-8", errors="replace")
+
+    with urllib.request.urlopen(
+        request, timeout=timeout
+    ) as response:
+        return response.read()
 
 
-def google_news_feed_url(query):
-    params = urllib.parse.urlencode({
-        "q": query,
-        "hl": "en-US",
-        "gl": "US",
-        "ceid": "US:en",
-    })
-    return "https://news.google.com/rss/search?" + params
+def clean_text(value):
+    if not value:
+        return ""
+
+    value = html.unescape(value)
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"\s+", " ", value)
+
+    return value.strip()
 
 
-def parse_feed(xml_text, feed_name):
+def fetch_google_news(query):
+    encoded_query = urllib.parse.quote(query)
+
+    url = (
+        "https://news.google.com/rss/search?q="
+        + encoded_query
+        + "&hl=en-US&gl=US&ceid=US:en"
+    )
+
     try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError as exc:
-        print(f"Warning: invalid RSS from {feed_name}: {exc}")
-        return []
-
-    items = []
-    for item in root.findall(".//item"):
-        title = clean_text(item.findtext("title"))
-        url = clean_text(item.findtext("link"))
-        source = clean_text(item.findtext("source"))
-        description = clean_text(item.findtext("description"))
-        published = clean_text(item.findtext("pubDate"))
-
-        if title and url:
-            items.append({
-                "title": title,
-                "url": url,
-                "source": source or feed_name,
-                "description": description[:600],
-                "published": published,
-            })
-    return items
-
-
-def fetch_feed(url, feed_name):
-    try:
-        return parse_feed(fetch_url(url), feed_name)
+        raw_xml = http_get(url)
+        root = ET.fromstring(raw_xml)
     except Exception as exc:
-        print(f"Warning: {feed_name} unavailable: {exc}")
+        print(
+            "RSS warning for "
+            + repr(query)
+            + ": "
+            + str(exc)[:180]
+        )
         return []
 
+    stories = []
 
-def collect_news():
-    collected = []
-    seen = set()
-
-    for query in FEED_QUERIES:
-        for item in fetch_feed(google_news_feed_url(query), "Google News"):
-            key = re.sub(r"[^a-z0-9]", "", item["title"].lower())
-            if key and key not in seen:
-                seen.add(key)
-                collected.append(item)
-            if len(collected) >= MAX_HEADLINES:
-                break
-        if len(collected) >= MAX_HEADLINES:
-            break
-        time.sleep(0.15)
-
-    if len(collected) < 10:
-        for url in FALLBACK_FEEDS:
-            for item in fetch_feed(url, "Publisher RSS"):
-                key = re.sub(r"[^a-z0-9]", "", item["title"].lower())
-                if key and key not in seen:
-                    seen.add(key)
-                    collected.append(item)
-                if len(collected) >= MAX_HEADLINES:
-                    break
-            if len(collected) >= MAX_HEADLINES:
-                break
-
-    now = datetime.now(timezone.utc)
-    recent, undated = [], []
-
-    for item in collected:
-        try:
-            dt = parsedate_to_datetime(item.get("published", ""))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            if (now - dt.astimezone(timezone.utc)).total_seconds() <= 5 * 86400:
-                recent.append(item)
-        except (TypeError, ValueError, OverflowError):
-            undated.append(item)
-
-    return (recent + undated)[:MAX_HEADLINES]
-
-
-def call_gemini(prompt, temperature=0.95):
-    if not API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY is missing. Add it in repository Settings > "
-            "Secrets and variables > Actions."
+    for item in root.findall(".//item"):
+        title = clean_text(
+            item.findtext("title", default="")
         )
 
-    model = MODEL or "gemini-3.5-flash-lite"
-    endpoint = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        + urllib.parse.quote(model, safe="")
+        link = clean_text(
+            item.findtext("link", default="")
+        )
+
+        source = clean_text(
+            item.findtext("source", default="")
+        )
+
+        pub_date = clean_text(
+            item.findtext("pubDate", default="")
+        )
+
+        description = clean_text(
+            item.findtext("description", default="")
+        )
+
+        if not title or not link:
+            continue
+
+        # Avoid accidentally treating malformed RSS entries
+        # as valid news stories.
+        if len(title) < 12:
+            continue
+
+        stories.append({
+            "title": title,
+            "url": link,
+            "source": source or "Google News",
+            "published": pub_date,
+            "description": description[:450],
+        })
+
+    return stories
+
+
+def collect_stories():
+    print("Collecting current entertainment headlines...")
+
+    collected = []
+    seen_titles = set()
+
+    for query in SEARCH_QUERIES:
+        results = fetch_google_news(query)
+
+        for story in results:
+            normalized = re.sub(
+                r"[^a-z0-9]+",
+                " ",
+                story["title"].lower()
+            ).strip()
+
+            if normalized in seen_titles:
+                continue
+
+            seen_titles.add(normalized)
+            collected.append(story)
+
+        # A small pause avoids hammering the RSS service.
+        time.sleep(0.25)
+
+    # Keep the freshest available stories near the top.
+    def publication_time(story):
+        value = story.get("published", "")
+
+        try:
+            parsed = parsedate_to_datetime(value)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(
+                    tzinfo=timezone.utc
+                )
+            return parsed.timestamp()
+        except Exception:
+            return 0
+
+    collected.sort(
+        key=publication_time,
+        reverse=True
+    )
+
+    collected = collected[:MAX_HEADLINES_TO_COLLECT]
+
+    print(
+        "Collected "
+        + str(len(collected))
+        + " distinct headlines."
+    )
+
+    return collected
+
+
+# ============================================================
+# STORY SELECTION
+# ============================================================
+
+def story_comedy_score(story):
+    title = story["title"].lower()
+    score = 0
+
+    high_interest_terms = [
+        "celebrity", "viral", "internet", "influencer",
+        "actor", "actress", "singer", "rapper", "pop star",
+        "reality tv", "reality show", "dating", "breakup",
+        "marriage", "wedding", "divorce", "scandal",
+        "awkward", "feud", "drama", "apolog", "roast",
+        "meme", "social media", "tiktok", "instagram",
+        "youtube", "netflix", "movie", "music", "album",
+        "billionaire", "fashion", "red carpet", "interview",
+        "fans", "award", "streaming", "ai", "artificial intelligence",
+        "prince", "royal", "reality", "controversy",
+    ]
+
+    for term in high_interest_terms:
+        if term in title:
+            score += 2
+
+    if "how to" in title:
+        score -= 2
+
+    if "live updates" in title:
+        score -= 1
+
+    if "opinion" in title:
+        score -= 1
+
+    # Headlines with a clear conflict or unexpected situation
+    # often provide a stronger starting point for a premise.
+    conflict_terms = [
+        "clash", "fight", "feud", "ban", "leak", "exposed",
+        "responds", "reacts", "fires back", "backlash",
+        "surprise", "unexpected", "caught", "reveals",
+        "confession", "fails", "crisis", "meltdown",
+        "apologizes", "denies", "slams", "secret",
+    ]
+
+    for term in conflict_terms:
+        if term in title:
+            score += 2
+
+    return score
+
+
+def select_stories(stories):
+    if not stories:
+        return []
+
+    ranked = sorted(
+        stories,
+        key=story_comedy_score,
+        reverse=True
+    )
+
+    selected = []
+    used_names = set()
+
+    for story in ranked:
+        title = story["title"].lower()
+
+        # Avoid selecting several headlines about the same
+        # person or event whenever possible.
+        words = re.findall(r"[a-z]{4,}", title)
+        key_words = set(words)
+
+        if any(
+            len(key_words & previous) >= 5
+            for previous in used_names
+        ):
+            continue
+
+        selected.append(story)
+        used_names.add(key_words)
+
+        if len(selected) >= TARGET_SCRIPTS:
+            break
+
+    # Fill any remaining slots with distinct headlines.
+    if len(selected) < TARGET_SCRIPTS:
+        selected_urls = {
+            story["url"] for story in selected
+        }
+
+        for story in ranked:
+            if story["url"] in selected_urls:
+                continue
+
+            selected.append(story)
+            selected_urls.add(story["url"])
+
+            if len(selected) >= TARGET_SCRIPTS:
+                break
+
+    return selected
+
+
+# ============================================================
+# THE NEW COMEDY WRITING ENGINE
+# ============================================================
+
+COMEDY_RULES = r"""
+You are writing original short stand-up comedy for a real
+Indian YouTube commentator speaking to a predominantly
+American and other English-speaking audience.
+
+THIS IS A COMEDY PERFORMANCE, NOT A NEWS SUMMARY.
+
+Your job is to make the audience laugh, not to explain an
+article.
+
+PERFORMANCE LENGTH:
+Aim for 85-100 spoken words. This should take approximately
+40-45 seconds when performed with natural pauses and emphasis.
+Never write a long introduction.
+
+THE COMEDY STRUCTURE:
+
+1. THE IMMEDIATE LAUGH:
+Start with a funny, surprising observation or a strong joke.
+The first sentence must sound like a comedian starting a bit,
+not a reporter introducing a headline.
+
+2. THE COMEDIC PREMISE:
+Find ONE ridiculous, relatable or revealing angle in the story.
+Ask yourself what makes this situation absurd if you look at it
+from an everyday person's perspective.
+
+3. THE ESCALATION:
+Build on that same idea. Each new sentence should make the
+original premise more ridiculous, more specific or more
+recognizable. Do not jump randomly between unrelated jokes.
+
+4. THE MISDIRECTION:
+Set up an expectation, then turn it into a more surprising
+and funnier observation. Use contrasts, reversals, unexpected
+comparisons, exaggerated logic and short punchy phrasing.
+
+5. THE FINAL PUNCHLINE:
+End on the strongest joke available. Prefer a sharp reversal,
+a callback to the opening, or an unexpected final image.
+The last line must feel like an actual punchline.
+
+COMEDY CRAFT:
+Use broad techniques found in strong American stand-up:
+specific observations, conversational storytelling, misdirection,
+exaggeration, rhythm, escalating absurdity, contrast, callbacks,
+and jokes about recognizable human behavior.
+
+Do not imitate or reproduce the signature style, wording,
+routines or identifiable material of any particular comedian.
+
+VOICE AND PERSONALITY:
+The performer is an Indian commentator with a confident,
+observant, self-aware point of view. He can make fun of himself,
+celebrity culture, online behavior, fame, relationships,
+technology and everyday human absurdity.
+
+Make the cultural perspective natural. Do not force an India
+reference into every script. Do not use fake accents, stereotypes
+or lazy jokes about nationalities.
+
+ORIGINALITY:
+Write the joke as if a comedian found a funny idea and developed
+it on stage. Do not write five generic one-liners.
+Avoid generic openings such as:
+"Have you ever noticed..."
+"So, apparently..."
+"Let's talk about..."
+"Today's news is..."
+"You won't believe this..."
+"Isn't it crazy how..."
+
+Avoid generic endings such as:
+"And that's the world we live in."
+"What a time to be alive."
+"Anyway, that's life."
+"Let that sink in."
+
+Avoid tired, obvious comparisons unless you discover a genuinely
+new twist. Do not add random jokes just to increase the count.
+Every line should serve the central comedic premise.
+
+FACTUAL RESPONSIBILITY:
+Use the supplied headline and information as the factual basis.
+Do not invent quotes, dialogue, private thoughts, motives,
+events, statistics, relationships or allegations.
+Do not present speculation as fact.
+You may invent an obviously fictional analogy or hypothetical
+situation to make a joke, provided the audience will not mistake
+it for something that actually happened.
+
+If the headline alone gives limited information, joke about the
+public-facing situation or the absurdity of the headline itself.
+Do not pretend to know details you have not been given.
+
+TARGET AUDIENCE:
+Adults who understand American internet culture, celebrity news,
+memes, streaming platforms, relationships and everyday life.
+Keep references understandable without lengthy explanation.
+
+SAFETY AND PERFORMANCE:
+No slurs, hateful stereotypes, threats or targeted harassment.
+Do not turn unverified allegations into facts.
+Sharp criticism of public behavior is acceptable.
+Do not make the routine sound like a corporate press release.
+
+OUTPUT FORMAT:
+Return ONLY the spoken script.
+No headline, title, explanation, word count, labels, bullet points,
+quotation marks around the entire script, or stage directions.
+Use natural spoken English.
+"""
+
+
+def build_prompt(story, previous_attempt="", feedback=""):
+    title = story["title"]
+    source = story.get("source", "Google News")
+    description = story.get("description", "")
+
+    prompt = f"""
+{COMEDY_RULES}
+
+STORY HEADLINE:
+{title}
+
+PUBLISHER:
+{source}
+
+AVAILABLE STORY DESCRIPTION:
+{description if description else "No additional description supplied."}
+
+IMPORTANT CREATIVE CHALLENGE:
+
+Do not merely paraphrase this headline.
+
+Find the funniest defensible premise hidden in this situation.
+Write one cohesive mini-routine that escalates that premise and
+finishes with a genuinely surprising punchline.
+
+The first sentence must already be funny.
+The last sentence must deliver the payoff.
+
+Aim for {IDEAL_MIN_WORDS}-{IDEAL_MAX_WORDS} spoken words.
+Count the words before returning your answer.
+
+Before answering, silently check:
+- Is the opening immediately interesting and funny?
+- Is there one clear central premise?
+- Does each joke build on the previous joke?
+- Is there a specific, surprising observation?
+- Does the ending land harder than the opening?
+- Is this actually funny, rather than merely clever or informative?
+- Are the factual claims supported by the supplied information?
+- Is the spoken script within the requested length?
+
+If a line is generic, replace it with a more specific joke.
+If the ending is predictable, rewrite it.
+Return only the finished spoken script.
+"""
+
+    if previous_attempt:
+        prompt += f"""
+
+YOUR PREVIOUS DRAFT FAILED VALIDATION.
+
+Rewrite the whole routine rather than adding filler.
+
+PREVIOUS DRAFT:
+{previous_attempt}
+
+VALIDATION FEEDBACK:
+{feedback}
+
+Keep the central idea only if it works. Improve the jokes,
+make the structure tighter, and return only the new script.
+"""
+
+    return prompt
+
+
+# ============================================================
+# GEMINI API
+# ============================================================
+
+def call_gemini(prompt):
+    if not API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY is missing. Check the GitHub "
+            "repository secret named GEMINI_API_KEY."
+        )
+
+    model_name = MODEL
+    if not model_name.startswith("models/"):
+        model_name = "models/" + model_name
+
+    url = (
+        "https://generativelanguage.googleapis.com/"
+        "v1beta/"
+        + model_name
         + ":generateContent?key="
         + urllib.parse.quote(API_KEY, safe="")
     )
 
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt}
+                ],
+            }
+        ],
         "generationConfig": {
-            "temperature": temperature,
-            "responseMimeType": "application/json",
+            "temperature": 1.0,
+            "topP": 0.95,
+            "maxOutputTokens": 700,
         },
     }
 
     request = urllib.request.Request(
-        endpoint,
+        url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
         method="POST",
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:
-            body = response.read().decode("utf-8", errors="replace")
-    except Exception as exc:
-        detail = ""
-        if hasattr(exc, "read"):
-            try:
-                detail = exc.read().decode("utf-8", errors="replace")[:1200]
-            except Exception:
-                pass
+        with urllib.request.urlopen(
+            request, timeout=60
+        ) as response:
+            result = json.loads(
+                response.read().decode("utf-8")
+            )
+
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode(
+            "utf-8", errors="replace"
+        )
+
         raise RuntimeError(
-            f"Gemini request failed for model '{model}': {exc}. {detail}"
+            "Gemini API HTTP "
+            + str(exc.code)
+            + ": "
+            + error_body[:900]
         ) from exc
 
-    try:
-        data = json.loads(body)
-        candidates = data.get("candidates", [])
-        if not candidates:
-            raise ValueError("Gemini returned no candidates: " + body[:800])
-        parts = candidates[0].get("content", {}).get("parts", [])
-        result = "\n".join(p.get("text", "") for p in parts).strip()
-        if not result:
-            raise ValueError("Gemini returned an empty response.")
-        return result
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError(f"Could not parse Gemini response: {exc}") from exc
-
-
-def extract_json(text):
-    text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\s*```$", "", text)
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("Model did not return a JSON object.")
-    return json.loads(text[start:end + 1])
-
-
-def story_selection_prompt(stories):
-    return f"""
-You are an elite comedy story editor for an English-language YouTube
-commentary channel. Pick the THREE stories with the strongest potential
-for an actually funny 45–50 second monologue.
-
-Do NOT pick a story just because it is celebrity news. Rank stories by:
-1. An immediately understandable absurdity, contradiction, overreaction,
-   hypocrisy, strange public behaviour, ridiculous stakes, or comic irony.
-2. Enough concrete information to support a specific premise.
-3. International audience familiarity or a clear explanation.
-4. Potential for an escalating bit, not just one obvious joke.
-5. Avoid stories where humour would rely on cruelty, tragedy, allegations
-   treated as fact, or targeting vulnerable people.
-
-Fashion roundups, routine announcements, and thin stories should usually
-lose to richer stories unless there is a truly original comic angle.
-
-Return valid JSON only:
-{{
-  "selected": [
-    {{
-      "story_url": "exact URL from the list",
-      "comic_potential": "why this story can sustain an original comic bit",
-      "angle_to_avoid": "the obvious, tired joke to avoid"
-    }}
-  ]
-}}
-
-Select exactly three DIFFERENT URLs. Never invent a story or URL.
-
-STORIES:
-{json.dumps(stories, ensure_ascii=False, indent=2)}
-"""
-
-
-def choose_stories(stories):
-    if len(stories) < TARGET_SCRIPTS:
-        raise RuntimeError(f"Only {len(stories)} usable headlines were found.")
-
-    try:
-        result = extract_json(
-            call_gemini(story_selection_prompt(stories), 0.35)
-        )
-        selected = result.get("selected", [])
-        by_url = {item["url"]: item for item in stories}
-        chosen, used = [], set()
-
-        for entry in selected:
-            url = str(entry.get("story_url", "")).strip()
-            if url in by_url and url not in used:
-                story = dict(by_url[url])
-                story["comic_potential"] = str(
-                    entry.get("comic_potential", "")
-                )
-                story["angle_to_avoid"] = str(
-                    entry.get("angle_to_avoid", "")
-                )
-                chosen.append(story)
-                used.add(url)
-
-            if len(chosen) == TARGET_SCRIPTS:
-                break
-
-        if len(chosen) == TARGET_SCRIPTS:
-            print("Selected three stories for comedy potential.")
-            return chosen
-
-        print(
-            "Warning: story selector returned invalid choices; "
-            "using diverse headlines."
-        )
     except Exception as exc:
-        print(f"Warning: story selection step failed: {exc}")
+        raise RuntimeError(
+            "Gemini request failed: "
+            + str(exc)[:500]
+        ) from exc
 
-    return stories[:TARGET_SCRIPTS]
+    candidates = result.get("candidates", [])
 
-
-def writer_prompt(stories):
-    return f"""
-You are not a generic AI assistant. You are a ruthless, highly inventive
-stand-up comedy head writer and short-form retention editor. Your drafts
-must sound spoken, specific, surprising, and worth sharing.
-
-TASK: Write exactly THREE separate 45–50 second monologues, one per
-story below. The performer is an Indian YouTuber speaking natural English
-to US, UK, Australian, German, and other international viewers.
-
-THE STANDARD
-Do not merely make observations that are mildly amusing. Find a comic
-premise that makes the story feel absurd, then build a complete bit.
-
-Before writing each script, silently answer:
-- What is the single funniest contradiction or absurdity here?
-- What is the fresh angle beyond the first obvious joke?
-- What specific image can the audience instantly picture?
-- How can each beat escalate the SAME premise?
-- What ending changes the meaning of the opening or pays off a callback?
-
-If the premise is weak, find a sharper angle from the facts. Do not
-pretend every headline is naturally hilarious. Do not make up facts.
-
-STRUCTURE FOR EACH SCRIPT
-1. HOOK (first sentence): a surprising, funny, concrete claim or image.
-   No greeting, no "so today", no headline readout.
-2. PREMISE: immediately reveal the comic lens and why it is ridiculous.
-3. ESCALATION: three or four connected beats, each funnier or more
-   specific than the previous one. The jokes must build, not feel like
-   separate tweets.
-4. TURN: introduce an unexpected comparison, reversal, or new implication.
-5. PAYOFF: a concise, genuinely surprising final punchline or callback.
-   Do not end with a summary, a moral, or "what do you think?"
-
-COMEDY TECHNIQUES TO USE SELECTIVELY
-- Specific, visual comparisons rather than vague adjectives.
-- Rule of three with the third item breaking the pattern.
-- Misdirection: lead the audience toward one interpretation, then twist it.
-- Escalation: every beat raises the ridiculous stakes.
-- Status contrast: celebrity-level drama versus ordinary life.
-- Callback: bring the opening image back in a transformed way.
-- A distinct Indian-commentator perspective only where it naturally
-  sharpens the joke; don't force references or explain them.
-
-ANTI-AI RULES
-Ban lazy filler: "the internet is wild", "you can't make this up",
-"let that sink in", "in today's world", "give them an Oscar",
-"rich people are different", "it's basically...", unless there is a
-specific original twist that makes the phrase work.
-No generic "luxury hotel", "small country", "shadow realm", or tea jokes
-unless a truly new setup makes them surprising.
-Do not repeat the same joke rhythm across all three scripts.
-Do not write a safe article summary followed by a punchline.
-Do not use random absurdity that doesn't connect to the premise.
-Don't confuse insults with jokes. Punch at public behaviour, PR, absurd
-systems, and the situation—not protected traits or vulnerable people.
-
-LENGTH
-Each spoken script must be 90–112 words. Aim for 98–105 words.
-Count spoken words only, not title, premise, or metadata.
-Every sentence must either clarify the premise, add a laugh, escalate,
-set up a turn, or pay off a joke. Cut anything that does none of these.
-Read it aloud mentally: use varied sentence lengths and conversational
-rhythm. No stage directions.
-
-FACTS
-Use only supplied story details. Do not invent quotes, motives, events,
-or outcomes. Exaggeration is allowed only when clearly comedic and not
-misleading. Treat allegations as allegations, not established facts.
-Include the exact source URL provided for each story.
-
-RETURN ONLY VALID JSON:
-{{
-  "scripts": [
-    {{
-      "title": "Distinct memorable title",
-      "story_title": "Exact supplied headline",
-      "source": "Publisher name",
-      "source_url": "Exact supplied URL",
-      "premise": "The central comic idea in one sentence",
-      "hook": "Exact first sentence of script",
-      "script": "Complete spoken monologue",
-      "closing_punchline": "Exact final sentence of script"
-    }}
-  ]
-}}
-
-For each story, the comic angle and the script must avoid the obvious
-tired joke listed with that story. The three premises and punchlines
-must be meaningfully different.
-
-STORIES:
-{json.dumps(stories, ensure_ascii=False, indent=2)}
-"""
-
-
-def validate_scripts(data, stories):
-    errors = []
-    scripts = data.get("scripts") if isinstance(data, dict) else None
-
-    if not isinstance(scripts, list) or len(scripts) != TARGET_SCRIPTS:
-        count = len(scripts) if isinstance(scripts, list) else "invalid"
-        return [], [f"Expected exactly three scripts; got {count}."]
-
-    known = {s["url"] for s in stories}
-    used_urls, used_titles, used_premises = set(), set(), set()
-    result = []
-
-    for i, item in enumerate(scripts, 1):
-        if not isinstance(item, dict):
-            errors.append(f"Script {i} is not an object.")
-            continue
-
-        fields = [
-            "title", "story_title", "source", "source_url",
-            "premise", "hook", "script", "closing_punchline",
-        ]
-        missing = [
-            f for f in fields if not str(item.get(f, "")).strip()
-        ]
-        if missing:
-            errors.append(f"Script {i} missing fields: {', '.join(missing)}.")
-            continue
-
-        spoken = re.sub(r"\s+", " ", str(item["script"])).strip()
-        count = word_count(spoken)
-
-        if not MIN_WORDS <= count <= MAX_WORDS:
-            errors.append(
-                f"Script {i} has {count} words; must be "
-                f"{MIN_WORDS}-{MAX_WORDS}."
-            )
-
-        sentences = re.split(r"(?<=[.!?])\s+", spoken)
-        first = sentences[0].strip() if sentences else ""
-        last = sentences[-1].strip() if sentences else ""
-
-        if (
-            first.casefold().rstrip('"”')
-            != str(item["hook"]).strip().casefold().rstrip('"”')
-        ):
-            errors.append(
-                f"Script {i} hook doesn't exactly match first sentence."
-            )
-
-        if (
-            last.casefold().rstrip('"”')
-            != str(item["closing_punchline"]).strip().casefold().rstrip('"”')
-        ):
-            errors.append(
-                f"Script {i} punchline doesn't exactly match final sentence."
-            )
-
-        url = str(item["source_url"]).strip()
-        if url not in known:
-            errors.append(
-                f"Script {i} uses a URL not in the selected story list."
-            )
-        if url in used_urls:
-            errors.append("Every script must use a different source URL.")
-        used_urls.add(url)
-
-        title_key = re.sub(
-            r"[^a-z0-9]", "", str(item["title"]).lower()
-        )
-        premise_key = re.sub(
-            r"[^a-z0-9]", "", str(item["premise"]).lower()
+    if not candidates:
+        block_reason = (
+            result.get("promptFeedback", {})
+            .get("blockReason", "unknown")
         )
 
-        if title_key in used_titles:
-            errors.append("Script titles must be unique.")
-        if premise_key in used_premises:
-            errors.append("Script premises must be distinct.")
-
-        used_titles.add(title_key)
-        used_premises.add(premise_key)
-
-        item["script"] = spoken
-        item["word_count"] = count
-        result.append(item)
-
-    return result, errors
-
-
-def generate_scripts(stories):
-    prompt = writer_prompt(stories)
-    previous_response = ""
-    errors = []
-
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        print(
-            f"Comedy writing and quality check: "
-            f"attempt {attempt}/{MAX_ATTEMPTS}"
+        raise RuntimeError(
+            "Gemini returned no candidates. "
+            "Block reason: " + str(block_reason)
         )
 
-        if attempt == 1:
-            current_prompt = prompt
-        else:
-            current_prompt = f"""
-Rewrite the COMPLETE JSON response from scratch to fix these failures.
-Do not merely add filler to short scripts. Preserve the strongest ideas,
-but make the writing genuinely funnier and more connected. Use the
-original story details below. Return valid JSON only.
+    parts = (
+        candidates[0]
+        .get("content", {})
+        .get("parts", [])
+    )
 
-FAILURES:
-{json.dumps(errors, ensure_ascii=False, indent=2)}
+    text_parts = [
+        part.get("text", "")
+        for part in parts
+        if part.get("text")
+    ]
 
-PREVIOUS DRAFT:
-{previous_response[:16000]}
+    answer = "\n".join(text_parts).strip()
 
-ORIGINAL STORY DATA:
-{json.dumps(stories, ensure_ascii=False, indent=2)}
+    if not answer:
+        raise RuntimeError(
+            "Gemini returned an empty text response."
+        )
 
-Requirements: exactly 3 distinct scripts, 90–112 spoken words each,
-a hook identical to the first sentence, a final punchline identical to
-the last sentence, three different source URLs, distinct premises and
-titles. Keep escalation connected to one comic idea. Remove generic
-filler, predictable comparisons, and unrelated jokes.
-Use the exact JSON structure from the previous writing instructions.
-"""
+    return answer
 
-        try:
-            previous_response = call_gemini(current_prompt, 0.98)
-            data = extract_json(previous_response)
-            scripts, errors = validate_scripts(data, stories)
 
-            if not errors and len(scripts) == TARGET_SCRIPTS:
-                print("All scripts passed structural validation.")
-                return scripts
+# ============================================================
+# SCRIPT CLEANING AND VALIDATION
+# ============================================================
 
-            print("Draft validation issues:")
-            for error in errors:
-                print(" - " + error)
+def clean_script(script):
+    script = html.unescape(script).strip()
 
-        except Exception as exc:
-            errors = [f"Invalid model response: {exc}"]
-            print(f"Could not validate draft: {exc}")
+    # Remove Markdown fences if the model ignores instructions.
+    script = re.sub(
+        r"^\s*```(?:text|markdown)?\s*",
+        "",
+        script,
+        flags=re.IGNORECASE
+    )
+    script = re.sub(r"\s*```\s*$", "", script)
 
-        if attempt < MAX_ATTEMPTS:
-            print("Rewriting all three scripts with the feedback...")
-            time.sleep(1)
+    # Remove common unwanted labels.
+    script = re.sub(
+        r"^\s*(?:script|comedy script|routine)\s*:\s*",
+        "",
+        script,
+        flags=re.IGNORECASE
+    )
 
-    raise RuntimeError(
-        f"Unable to produce three valid scripts after {MAX_ATTEMPTS} attempts. "
-        "No new output file was saved. See validation messages above."
+    # Remove accidental title headings.
+    script = re.sub(r"^\s*#{1,6}\s*", "", script)
+
+    # Remove stage directions while keeping spoken content.
+    script = re.sub(
+        r"\[(?:pause|laughs?|beat|audience laughs?|"
+        r"looks at camera|smiles?)\]",
+        "",
+        script,
+        flags=re.IGNORECASE
+    )
+
+    script = re.sub(
+        r"\((?:pause|laughs?|beat|audience laughs?)\)",
+        "",
+        script,
+        flags=re.IGNORECASE
+    )
+
+    # Normalize whitespace without destroying punctuation.
+    script = re.sub(r"[ \t]+", " ", script)
+    script = re.sub(r"\n{3,}", "\n\n", script)
+
+    return script.strip()
+
+
+def count_words(script):
+    return len(
+        re.findall(
+            r"\b[\w]+(?:['’][\w]+)*\b",
+            script,
+            flags=re.UNICODE
+        )
     )
 
 
-def render_markdown(scripts):
-    today = datetime.now().astimezone().strftime("%Y-%m-%d")
-    lines = [
-        f"# Daily Comedy Scripts — {today}",
-        "",
-        "> AI-assisted comedy drafts. Verify the original reporting before "
-        "recording. The fact-check reminder is not proof.",
-        "",
-    ]
+def validate_script(script):
+    if not script:
+        return False, "The response was empty."
 
-    for i, item in enumerate(scripts, 1):
-        lines.extend([
-            f"## {i}. {item['title']}",
-            "",
-            f"**News story:** {item['story_title']}",
-            f"**Source:** {item['source']}",
-            f"**Source link:** {item['source_url']}",
-            f"**Comic premise:** {item['premise']}",
-            f"**Length:** {item['word_count']} words (target: 45–50 seconds)",
-            "",
-            item["script"],
-            "",
-            "---",
-            "",
-        ])
+    words = count_words(script)
 
-    return "\n".join(lines)
-
-
-def save_output(content):
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    today = datetime.now().astimezone().strftime("%Y-%m-%d")
-    path = OUTPUT_DIR / f"comedy-scripts-{today}.md"
-    path.write_text(content, encoding="utf-8")
-    print(f"Saved scripts to: {path}")
-    return path
-
-
-def main():
-    print("Daily Comedy Agent — premise-first comedy engine")
-    print(f"Gemini model: {MODEL or 'gemini-3.5-flash-lite'}")
-
-    news = collect_news()
-    if len(news) < TARGET_SCRIPTS:
-        raise RuntimeError(
-            f"Only {len(news)} usable news stories were found. Try again later."
+    if words < ACCEPT_MIN_WORDS:
+        return (
+            False,
+            "Only "
+            + str(words)
+            + " words. Expand the routine with stronger "
+              "escalation, not filler."
         )
 
-    print(f"Collected {len(news)} news headlines.")
-    chosen = choose_stories(news)
+    if words > ACCEPT_MAX_WORDS:
+        return (
+            False,
+            str(words)
+            + " words. Tighten the routine to fit "
+              "a 40-45 second performance."
+        )
 
-    print("Selected stories:")
-    for story in chosen:
-        print(" - " + story["title"])
+    sentences = re.split(
+        r"(?<=[.!?])\s+",
+        script.strip()
+    )
 
-    scripts = generate_scripts(chosen)
-    path = save_output(render_markdown(scripts))
+    if len(sentences) < 3:
+        return (
+            False,
+            "The routine needs a clearer setup, escalation "
+            "and ending."
+        )
 
-    print("\nFinal scripts:")
-    for i, item in enumerate(scripts, 1):
-        print(f"{i}. {item['title']} — {item['word_count']} words")
+    first_sentence = sentences[0].strip().lower()
 
-    print(f"Output file: {path}")
+    weak_openings = [
+        "have you ever noticed",
+        "today we're talking about",
+        "today we are talking about",
+        "let's talk about",
+        "so apparently",
+        "in today's news",
+        "according to the news",
+        "today's headline",
+    ]
+
+    if any(
+        first_sentence.startswith(phrase)
+        for phrase in weak_openings
+    ):
+        return (
+            False,
+            "The opening sounds like a news report. "
+            "Start with a funny observation instead."
+        )
+
+    weak_endings = [
+        "what a time to be alive",
+        "and that's the world we live in",
+        "and that is the world we live in",
+        "let that sink in",
+        "anyway, that's life",
+    ]
+
+    final_sentence = sentences[-1].strip().lower()
+
+    if any(
+        phrase in final_sentence
+        for phrase in weak_endings
+    ):
+        return (
+            False,
+            "The ending is generic. Replace it with a "
+            "specific punchline or callback."
+        )
+
+    return True, "Valid: " + str(words) + " words."
 
 
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        sys.exit(1)
+def generate_one_script(story, index):
+    previous_attempt = ""
+    feedback = ""
+
+    print("")
+    print(
+        "Writing script "
+        + str(index)
+        + ": "
+        + story["title"]
+    )
